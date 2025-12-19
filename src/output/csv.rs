@@ -111,12 +111,20 @@ impl CsvWriter {
     /// Escape a string value to prevent CSV formula injection
     /// Values starting with =, +, -, @, tab, or carriage return can be interpreted
     /// as formulas by spreadsheet applications (Excel, Google Sheets, etc.)
+    /// Also handles leading whitespace that could bypass basic checks.
     fn escape_formula_injection(s: &str) -> String {
         if s.is_empty() {
             return s.to_string();
         }
-        let first_char = s.chars().next().unwrap();
-        if matches!(first_char, '=' | '+' | '-' | '@' | '\t' | '\r') {
+
+        // Check both the first char and the first non-whitespace char
+        // to prevent bypass via leading whitespace (e.g., " =formula")
+        let first_char = s.chars().next().unwrap_or(' ');
+        let first_non_ws = s.trim_start().chars().next().unwrap_or(' ');
+
+        if matches!(first_char, '=' | '+' | '-' | '@' | '\t' | '\r')
+            || matches!(first_non_ws, '=' | '+' | '-' | '@' | '\t' | '\r')
+        {
             // Prefix with single quote to prevent formula interpretation
             format!("'{}", s)
         } else {

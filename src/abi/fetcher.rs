@@ -29,11 +29,14 @@ fn decode_string_from_hex(hex: &str) -> Option<String> {
     // ABI-encoded string: offset (32 bytes) + length (32 bytes) + data
     // Skip first 32 bytes (offset), read next 32 bytes as length
     let length = u64::from_be_bytes(bytes[56..64].try_into().ok()?) as usize;
-    if bytes.len() < 64 + length {
+
+    // Prevent integer overflow: use checked_add for bounds calculation
+    let end = 64usize.checked_add(length)?;
+    if bytes.len() < end {
         return None;
     }
 
-    let string_bytes = &bytes[64..64 + length];
+    let string_bytes = &bytes[64..end];
     String::from_utf8(string_bytes.to_vec())
         .ok()
         .map(|s| s.trim_end_matches('\0').to_string())
@@ -62,8 +65,14 @@ fn decode_uint8_from_hex(hex: &str) -> Option<u8> {
         return None;
     }
 
+    // Handle all-zeros case (e.g., "0" or "00...00" for tokens with 0 decimals)
+    let trimmed = hex.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return Some(0);
+    }
+
     // Parse as u64 first, then check if it fits in u8
-    let value = u64::from_str_radix(hex.trim_start_matches('0'), 16).ok()?;
+    let value = u64::from_str_radix(trimmed, 16).ok()?;
     if value > 255 {
         return None;
     }
