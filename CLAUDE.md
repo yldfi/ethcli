@@ -89,14 +89,25 @@ src/
 
 ## Release Process
 
-1. Update version in `Cargo.toml`
-2. Commit changes
-3. Tag and push:
-   ```bash
-   git tag v0.x.x
-   git push origin v0.x.x
-   ```
-4. GitHub Actions builds binaries for Linux/macOS/Windows
+**Automated with release-please:**
+- Use [Conventional Commits](https://www.conventionalcommits.org/) in commit messages
+- `feat:` - triggers minor version bump
+- `fix:` - triggers patch version bump
+- `feat!:` or `BREAKING CHANGE:` - triggers major version bump
+- Release-please creates a PR with version bump and CHANGELOG
+- Merging the PR triggers binary builds for all platforms
+
+**Manual release (alternative):**
+```bash
+git tag v0.x.x
+git push origin v0.x.x
+```
+
+## Pre-commit Hooks
+
+Installed hooks run automatically on commit:
+- `cargo fmt --check` - formatting check
+- `cargo clippy -- -D warnings` - lint check
 
 ## Architecture Notes
 
