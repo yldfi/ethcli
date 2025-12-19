@@ -3,7 +3,8 @@
 use crate::config::{Chain, EndpointConfig, RpcConfig};
 use crate::error::{sanitize_error_message, Error, Result, RpcError};
 use crate::rpc::{default_endpoints, Endpoint, EndpointHealth, HealthTracker};
-use alloy::rpc::types::{Filter, Log};
+use alloy::primitives::B256;
+use alloy::rpc::types::{Filter, Log, Transaction, TransactionReceipt};
 use futures::future::join_all;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -133,6 +134,56 @@ impl RpcPool {
                     self.health.record_failure(endpoint.url(), false, false);
                     tracing::debug!(
                         "Failed to get block number from {}: {}",
+                        sanitize_error_message(endpoint.url()),
+                        e
+                    );
+                }
+            }
+        }
+
+        Err(RpcError::AllEndpointsFailed.into())
+    }
+
+    /// Get a transaction by hash (tries multiple endpoints)
+    pub async fn get_transaction(&self, hash: B256) -> Result<Option<Transaction>> {
+        let endpoints = self.select_endpoints(3);
+
+        for endpoint in endpoints {
+            match endpoint.get_transaction(hash).await {
+                Ok(tx) => {
+                    self.health
+                        .record_success(endpoint.url(), Duration::from_millis(100));
+                    return Ok(tx);
+                }
+                Err(e) => {
+                    self.health.record_failure(endpoint.url(), false, false);
+                    tracing::debug!(
+                        "Failed to get transaction from {}: {}",
+                        sanitize_error_message(endpoint.url()),
+                        e
+                    );
+                }
+            }
+        }
+
+        Err(RpcError::AllEndpointsFailed.into())
+    }
+
+    /// Get a transaction receipt by hash (tries multiple endpoints)
+    pub async fn get_transaction_receipt(&self, hash: B256) -> Result<Option<TransactionReceipt>> {
+        let endpoints = self.select_endpoints(3);
+
+        for endpoint in endpoints {
+            match endpoint.get_transaction_receipt(hash).await {
+                Ok(receipt) => {
+                    self.health
+                        .record_success(endpoint.url(), Duration::from_millis(100));
+                    return Ok(receipt);
+                }
+                Err(e) => {
+                    self.health.record_failure(endpoint.url(), false, false);
+                    tracing::debug!(
+                        "Failed to get transaction receipt from {}: {}",
                         sanitize_error_message(endpoint.url()),
                         e
                     );

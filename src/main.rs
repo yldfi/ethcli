@@ -167,6 +167,33 @@ enum Commands {
     /// Fetch logs from a contract
     Fetch,
 
+    /// Analyze a transaction
+    Tx {
+        /// Transaction hash(es) (with or without 0x prefix)
+        hashes: Vec<String>,
+
+        /// Read transaction hashes from file (one per line)
+        #[arg(long, short = 'f')]
+        file: Option<PathBuf>,
+
+        /// Read transaction hashes from stdin (one per line)
+        #[arg(long)]
+        stdin: bool,
+
+        /// Output format (pretty, json, or ndjson)
+        #[arg(long, short, default_value = "pretty")]
+        output: String,
+
+        /// Process transactions in parallel batches
+        #[arg(long, default_value = "10")]
+        batch_size: usize,
+
+        /// Enrich with Etherscan data (contract names, token symbols, function decoding)
+        /// Slower but provides more detailed output
+        #[arg(long)]
+        enrich: bool,
+    },
+
     /// Manage and test RPC endpoints
     Endpoints {
         #[command(subcommand)]
@@ -256,6 +283,25 @@ async fn main() -> anyhow::Result<()> {
 
     // Handle subcommands
     match &cli.command {
+        Some(Commands::Tx {
+            hashes,
+            file,
+            stdin,
+            output,
+            batch_size,
+            enrich,
+        }) => {
+            return handle_tx(
+                hashes,
+                file.as_ref(),
+                *stdin,
+                output,
+                *batch_size,
+                *enrich,
+                &cli,
+            )
+            .await;
+        }
         Some(Commands::Endpoints { action }) => {
             return handle_endpoints(action, &cli).await;
         }
@@ -744,6 +790,213 @@ async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
                 println!("\nCreate one with:");
                 println!("  eth-log-fetch config set-etherscan-key YOUR_KEY");
             }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_tx(
+    hashes: &[String],
+    file: Option<&PathBuf>,
+    read_stdin: bool,
+    output_format: &str,
+    batch_size: usize,
+    enrich: bool,
+    cli: &Cli,
+) -> anyhow::Result<()> {
+    use std::io::BufRead;
+
+    // Collect all hashes from various sources
+    let mut all_hashes: Vec<String> = hashes.to_vec();
+
+    // Read from file if specified
+    if let Some(path) = file {
+        let file = std::fs::File::open(path)?;
+        let reader = std::io::BufReader::new(file);
+        for line in reader.lines() {
+            let line = line?;
+            let hash = line.trim();
+            if !hash.is_empty() && !hash.starts_with('#') {
+                all_hashes.push(hash.to_string());
+            }
+        }
+    }
+
+    // Read from stdin if specified
+    if read_stdin {
+        let stdin = std::io::stdin();
+        let reader = stdin.lock();
+        for line in reader.lines() {
+            let line = line?;
+            let hash = line.trim();
+            if !hash.is_empty() && !hash.starts_with('#') {
+                all_hashes.push(hash.to_string());
+            }
+        }
+    }
+
+    if all_hashes.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No transaction hashes provided. Use positional args, --file, or --stdin"
+        ));
+    }
+
+    // Parse chain
+    let chain: Chain = cli.chain.parse()?;
+
+    // Load config file for additional settings
+    let config_file = ConfigFile::load_default().ok().flatten();
+
+    // Build RPC config
+    let rpc_config = build_rpc_config(cli, &config_file)?;
+
+    // Create RPC pool
+    let pool = RpcPool::new(chain, &rpc_config)?;
+
+    let tx_count = all_hashes.len();
+    let endpoint_count = pool.endpoint_count();
+
+    if !cli.quiet {
+        eprintln!(
+            "Analyzing {} transaction{} using {} RPC endpoints (batch size: {})...",
+            tx_count,
+            if tx_count == 1 { "" } else { "s" },
+            endpoint_count,
+            batch_size
+        );
+    }
+
+    // Create analyzer
+    let analyzer = std::sync::Arc::new(eth_log_fetcher::TxAnalyzer::new(pool, chain));
+
+    let start = Instant::now();
+    let mut all_analyses = Vec::new();
+    let mut total_events = 0;
+    let mut total_transfers = 0;
+    let mut failed_count = 0;
+
+    // Process in batches for parallelism
+    for (batch_idx, batch) in all_hashes.chunks(batch_size).enumerate() {
+        let batch_start = batch_idx * batch_size;
+
+        if !cli.quiet && tx_count > 1 {
+            eprint!(
+                "\r[{}-{}/{}] Processing batch...",
+                batch_start + 1,
+                (batch_start + batch.len()).min(tx_count),
+                tx_count
+            );
+        }
+
+        // Process batch in parallel
+        let futures: Vec<_> = batch
+            .iter()
+            .enumerate()
+            .map(|(i, hash)| {
+                let analyzer = analyzer.clone();
+                let hash = if hash.starts_with("0x") || hash.starts_with("0X") {
+                    hash.to_string()
+                } else {
+                    format!("0x{}", hash)
+                };
+                let idx = batch_start + i;
+
+                async move {
+                    let result = if enrich {
+                        analyzer.analyze_enriched(&hash).await
+                    } else {
+                        analyzer.analyze(&hash).await
+                    };
+                    (idx, hash.clone(), result)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        for (idx, hash, result) in results {
+            match result {
+                Ok(analysis) => {
+                    total_events += analysis.events.len();
+                    total_transfers += analysis.token_flows.len();
+                    all_analyses.push((idx, analysis));
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    if !cli.quiet {
+                        eprintln!(
+                            "\n[{}] Error: {} - {}",
+                            idx + 1,
+                            &hash[..hash.len().min(12)],
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by original index to maintain order
+    all_analyses.sort_by_key(|(idx, _)| *idx);
+    let analyses: Vec<_> = all_analyses.into_iter().map(|(_, a)| a).collect();
+
+    if !cli.quiet && tx_count > 1 {
+        eprintln!(); // Clear the progress line
+    }
+
+    let elapsed = start.elapsed();
+
+    // Output
+    match output_format {
+        "json" => {
+            if analyses.len() == 1 {
+                let json = serde_json::to_string_pretty(&analyses[0])?;
+                println!("{}", json);
+            } else {
+                let json = serde_json::to_string_pretty(&analyses)?;
+                println!("{}", json);
+            }
+        }
+        "ndjson" => {
+            // Newline-delimited JSON - one per line, good for streaming/large datasets
+            for analysis in &analyses {
+                let json = serde_json::to_string(analysis)?;
+                println!("{}", json);
+            }
+        }
+        _ => {
+            // Pretty print
+            for (i, analysis) in analyses.iter().enumerate() {
+                if i > 0 {
+                    println!("\n{}", "=".repeat(80));
+                    println!();
+                }
+                println!("{}", eth_log_fetcher::format_analysis(analysis));
+            }
+        }
+    }
+
+    if !cli.quiet {
+        let failed_msg = if failed_count > 0 {
+            format!(", {} failed", failed_count)
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "\nAnalyzed {} transaction{} in {:.2}s ({} events, {} transfers{})",
+            analyses.len(),
+            if analyses.len() == 1 { "" } else { "s" },
+            elapsed.as_secs_f64(),
+            total_events,
+            total_transfers,
+            failed_msg
+        );
+        if tx_count > 10 {
+            eprintln!(
+                "Throughput: {:.1} tx/s",
+                analyses.len() as f64 / elapsed.as_secs_f64()
+            );
         }
     }
 

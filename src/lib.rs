@@ -28,6 +28,7 @@
 //! ```
 
 pub mod abi;
+pub mod cache;
 pub mod checkpoint;
 pub mod config;
 pub mod error;
@@ -35,9 +36,11 @@ pub mod fetcher;
 pub mod output;
 pub mod proxy;
 pub mod rpc;
+pub mod tx;
 
 // Re-exports for convenience
 pub use abi::{AbiFetcher, DecodedLog, EventSignature, LogDecoder};
+pub use cache::{CacheStats, SignatureCache};
 pub use checkpoint::{Checkpoint, CheckpointManager};
 pub use config::{
     BlockNumber, BlockRange, Chain, ChainId, Config, ConfigBuilder, ConfigFile, EndpointConfig,
@@ -50,3 +53,4 @@ pub use fetcher::{
 pub use output::{create_writer, CsvWriter, JsonWriter, OutputWriter, SqliteWriter};
 pub use proxy::{validate_proxy_url, ProxyRotator, RotationMode};
 pub use rpc::{default_endpoints, Endpoint, EndpointHealth, HealthTracker, RpcPool};
+pub use tx::{format_analysis, TransactionAnalysis, TxAnalyzer};

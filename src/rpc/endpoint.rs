@@ -2,8 +2,9 @@
 
 use crate::config::EndpointConfig;
 use crate::error::{Result, RpcError};
+use alloy::primitives::B256;
 use alloy::providers::{Provider, ProviderBuilder};
-use alloy::rpc::types::{Filter, Log};
+use alloy::rpc::types::{Filter, Log, Transaction, TransactionReceipt};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -165,6 +166,34 @@ impl Endpoint {
                     return Err(RpcError::ResponseTooLarge(0).into());
                 }
 
+                Err(RpcError::Provider(crate::error::sanitize_error_message(&e.to_string())).into())
+            }
+            Err(_) => Err(RpcError::Timeout(self.timeout.as_millis() as u64).into()),
+        }
+    }
+
+    /// Get a transaction by hash
+    pub async fn get_transaction(&self, hash: B256) -> Result<Option<Transaction>> {
+        let result =
+            tokio::time::timeout(self.timeout, self.provider.get_transaction_by_hash(hash)).await;
+
+        match result {
+            Ok(Ok(tx)) => Ok(tx),
+            Ok(Err(e)) => {
+                Err(RpcError::Provider(crate::error::sanitize_error_message(&e.to_string())).into())
+            }
+            Err(_) => Err(RpcError::Timeout(self.timeout.as_millis() as u64).into()),
+        }
+    }
+
+    /// Get a transaction receipt by hash
+    pub async fn get_transaction_receipt(&self, hash: B256) -> Result<Option<TransactionReceipt>> {
+        let result =
+            tokio::time::timeout(self.timeout, self.provider.get_transaction_receipt(hash)).await;
+
+        match result {
+            Ok(Ok(receipt)) => Ok(receipt),
+            Ok(Err(e)) => {
                 Err(RpcError::Provider(crate::error::sanitize_error_message(&e.to_string())).into())
             }
             Err(_) => Err(RpcError::Timeout(self.timeout.as_millis() as u64).into()),
