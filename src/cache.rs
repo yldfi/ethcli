@@ -5,12 +5,18 @@
 //! 2. Local JSON file cache for previously looked up signatures (~1ms)
 //! 3. Remote fetch from 4byte.directory for unknown signatures (~100-500ms)
 
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Maximum number of entries before triggering cleanup
+const MAX_CACHE_ENTRIES: usize = 10_000;
+/// Cleanup interval in number of writes
+const CLEANUP_INTERVAL: u64 = 100;
 
 /// Cache entry with timestamp
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +44,8 @@ pub struct SignatureCache {
     data: RwLock<CacheData>,
     /// Cache TTL (time-to-live)
     ttl: Duration,
+    /// Write counter for periodic cleanup
+    write_count: AtomicU64,
 }
 
 impl SignatureCache {
@@ -54,6 +62,7 @@ impl SignatureCache {
             path,
             data: RwLock::new(data),
             ttl: Duration::from_secs(30 * 24 * 60 * 60), // 30 days default
+            write_count: AtomicU64::new(0),
         }
     }
 
@@ -78,16 +87,42 @@ impl SignatureCache {
         serde_json::from_str(&content).ok()
     }
 
-    /// Save cache to file
+    /// Save cache to file with periodic cleanup
     fn save_to_file(&self) -> Result<(), std::io::Error> {
         // Create parent directories if needed
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        let data = self.data.read().unwrap();
+        // Increment write counter and check if cleanup is needed
+        let count = self.write_count.fetch_add(1, Ordering::Relaxed);
+
+        // Check if cleanup is needed (every CLEANUP_INTERVAL writes or if cache is too large)
+        let needs_cleanup = {
+            let data = self.data.read();
+            count.is_multiple_of(CLEANUP_INTERVAL)
+                || data.events.len() + data.functions.len() > MAX_CACHE_ENTRIES
+        };
+
+        if needs_cleanup {
+            self.cleanup_internal();
+        }
+
+        let data = self.data.read();
         let content = serde_json::to_string_pretty(&*data)?;
         fs::write(&self.path, content)
+    }
+
+    /// Internal cleanup without saving (to avoid recursion)
+    fn cleanup_internal(&self) {
+        let mut data = self.data.write();
+        let now = Self::now();
+        let ttl_secs = self.ttl.as_secs();
+
+        data.events
+            .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
+        data.functions
+            .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
     }
 
     /// Get current Unix timestamp
@@ -107,7 +142,7 @@ impl SignatureCache {
 
     /// Get event signature by topic0 hash
     pub fn get_event(&self, topic0: &str) -> Option<String> {
-        let data = self.data.read().unwrap();
+        let data = self.data.read();
         let topic = topic0.to_lowercase();
 
         if let Some(entry) = data.events.get(&topic) {
@@ -121,7 +156,7 @@ impl SignatureCache {
     /// Set event signature
     pub fn set_event(&self, topic0: &str, signature: &str) {
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             let topic = topic0.to_lowercase();
             data.events.insert(
                 topic,
@@ -137,7 +172,7 @@ impl SignatureCache {
 
     /// Get function signature by 4-byte selector
     pub fn get_function(&self, selector: &str) -> Option<String> {
-        let data = self.data.read().unwrap();
+        let data = self.data.read();
         let sel = selector.to_lowercase();
 
         if let Some(entry) = data.functions.get(&sel) {
@@ -151,7 +186,7 @@ impl SignatureCache {
     /// Set function signature
     pub fn set_function(&self, selector: &str, signature: &str) {
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             let sel = selector.to_lowercase();
             data.functions.insert(
                 sel,
@@ -168,7 +203,7 @@ impl SignatureCache {
     /// Batch set multiple event signatures
     pub fn set_events_batch(&self, entries: &[(String, String)]) {
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             let now = Self::now();
             for (topic, signature) in entries {
                 data.events.insert(
@@ -186,7 +221,7 @@ impl SignatureCache {
     /// Batch set multiple function signatures
     pub fn set_functions_batch(&self, entries: &[(String, String)]) {
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             let now = Self::now();
             for (selector, signature) in entries {
                 data.functions.insert(
@@ -203,7 +238,7 @@ impl SignatureCache {
 
     /// Get cache statistics
     pub fn stats(&self) -> CacheStats {
-        let data = self.data.read().unwrap();
+        let data = self.data.read();
         let now = Self::now();
         let ttl_secs = self.ttl.as_secs();
 
@@ -229,23 +264,21 @@ impl SignatureCache {
 
     /// Clear expired entries
     pub fn cleanup(&self) {
-        {
-            let mut data = self.data.write().unwrap();
-            let now = Self::now();
-            let ttl_secs = self.ttl.as_secs();
-
-            data.events
-                .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
-            data.functions
-                .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
+        self.cleanup_internal();
+        // Save directly to disk without triggering cleanup again
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
         }
-        let _ = self.save_to_file();
+        let data = self.data.read();
+        let _ = serde_json::to_string_pretty(&*data)
+            .ok()
+            .and_then(|content| fs::write(&self.path, content).ok());
     }
 
     /// Clear all cached data
     pub fn clear(&self) {
         {
-            let mut data = self.data.write().unwrap();
+            let mut data = self.data.write();
             data.events.clear();
             data.functions.clear();
         }
