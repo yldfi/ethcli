@@ -146,14 +146,22 @@ impl RpcPool {
 
     /// Get a transaction by hash (tries multiple endpoints)
     pub async fn get_transaction(&self, hash: B256) -> Result<Option<Transaction>> {
-        let endpoints = self.select_endpoints(3);
+        // Try more endpoints for historical data - archive coverage varies
+        let endpoints = self.select_endpoints(self.concurrency.max(5));
 
         for endpoint in endpoints {
             match endpoint.get_transaction(hash).await {
-                Ok(tx) => {
+                Ok(Some(tx)) => {
                     self.health
                         .record_success(endpoint.url(), Duration::from_millis(100));
-                    return Ok(tx);
+                    return Ok(Some(tx));
+                }
+                Ok(None) => {
+                    // Transaction not found on this endpoint, try others
+                    tracing::debug!(
+                        "Transaction not found on {}, trying next endpoint",
+                        sanitize_error_message(endpoint.url())
+                    );
                 }
                 Err(e) => {
                     self.health.record_failure(endpoint.url(), false, false);
@@ -166,19 +174,28 @@ impl RpcPool {
             }
         }
 
-        Err(RpcError::AllEndpointsFailed.into())
+        // No endpoint had the transaction
+        Ok(None)
     }
 
     /// Get a transaction receipt by hash (tries multiple endpoints)
     pub async fn get_transaction_receipt(&self, hash: B256) -> Result<Option<TransactionReceipt>> {
-        let endpoints = self.select_endpoints(3);
+        // Try more endpoints for historical data - archive coverage varies
+        let endpoints = self.select_endpoints(self.concurrency.max(5));
 
         for endpoint in endpoints {
             match endpoint.get_transaction_receipt(hash).await {
-                Ok(receipt) => {
+                Ok(Some(receipt)) => {
                     self.health
                         .record_success(endpoint.url(), Duration::from_millis(100));
-                    return Ok(receipt);
+                    return Ok(Some(receipt));
+                }
+                Ok(None) => {
+                    // Receipt not found on this endpoint, try others
+                    tracing::debug!(
+                        "Receipt not found on {}, trying next endpoint",
+                        sanitize_error_message(endpoint.url())
+                    );
                 }
                 Err(e) => {
                     self.health.record_failure(endpoint.url(), false, false);
@@ -191,7 +208,8 @@ impl RpcPool {
             }
         }
 
-        Err(RpcError::AllEndpointsFailed.into())
+        // No endpoint had the receipt
+        Ok(None)
     }
 
     /// Fetch logs with automatic retry and load balancing
