@@ -111,6 +111,8 @@ pub struct LogFetcher {
     decoder: Option<LogDecoder>,
     /// Progress callback
     progress_callback: Option<ProgressCallback>,
+    /// Resolved event signature (for filtering)
+    resolved_event: Option<String>,
 }
 
 impl LogFetcher {
@@ -119,11 +121,30 @@ impl LogFetcher {
         // Create RPC pool
         let pool = RpcPool::new(config.chain, &config.rpc)?;
 
+        // Resolve event name if it's just a name (no parentheses)
+        let resolved_event = if let Some(event_str) = &config.event {
+            if event_str.contains('(') {
+                // Already a full signature
+                Some(event_str.clone())
+            } else {
+                // Just an event name - resolve from Etherscan ABI
+                tracing::info!("Resolving event name '{}' from contract ABI...", event_str);
+                let fetcher = AbiFetcher::new(config.etherscan_key.clone())?;
+                let resolved = fetcher
+                    .resolve_event_name(config.chain, &config.contract, event_str)
+                    .await?;
+                tracing::info!("Resolved to: {}", resolved);
+                Some(resolved)
+            }
+        } else {
+            None
+        };
+
         // Set up decoder if not raw mode
         let decoder = if config.raw {
             None
         } else {
-            Some(Self::setup_decoder(&config).await?)
+            Some(Self::setup_decoder(&config, resolved_event.as_deref()).await?)
         };
 
         Ok(Self {
@@ -131,13 +152,14 @@ impl LogFetcher {
             pool,
             decoder,
             progress_callback: None,
+            resolved_event,
         })
     }
 
     /// Set up the log decoder
-    async fn setup_decoder(config: &Config) -> Result<LogDecoder> {
-        // If event signature provided, use that
-        if let Some(event_str) = &config.event {
+    async fn setup_decoder(config: &Config, resolved_event: Option<&str>) -> Result<LogDecoder> {
+        // If we have a resolved event signature, use that
+        if let Some(event_str) = resolved_event {
             let sig = EventSignature::parse(event_str)?;
             return LogDecoder::from_signature(&sig);
         }
@@ -196,12 +218,10 @@ impl LogFetcher {
 
         let mut base_filter = Filter::new().address(address);
 
-        // Add event topic if we have a specific event
-        if let Some(_decoder) = &self.decoder {
-            if let Some(event_str) = &self.config.event {
-                let sig = EventSignature::parse(event_str)?;
-                base_filter = base_filter.event_signature(sig.topic);
-            }
+        // Add event topic if we have a specific event (works in both raw and decoded modes)
+        if let Some(event_str) = &self.resolved_event {
+            let sig = EventSignature::parse(event_str)?;
+            base_filter = base_filter.event_signature(sig.topic);
         }
 
         // Fetch chunks in parallel
@@ -544,8 +564,8 @@ impl StreamingFetcher {
 
         let mut base_filter = Filter::new().address(address);
 
-        // Add event topic if specified
-        if let Some(event_str) = &self.fetcher.config.event {
+        // Add event topic if specified (use resolved event for proper filtering)
+        if let Some(event_str) = &self.fetcher.resolved_event {
             let sig = EventSignature::parse(event_str)?;
             base_filter = base_filter.event_signature(sig.topic);
         }
