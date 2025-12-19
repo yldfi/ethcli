@@ -132,8 +132,9 @@ impl ConfigFile {
     pub fn save(&self, path: &Path) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| ConfigError::InvalidFile(format!("Failed to create directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ConfigError::InvalidFile(format!("Failed to create directory: {}", e))
+            })?;
         }
 
         let content = toml::to_string_pretty(self)

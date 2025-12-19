@@ -70,7 +70,9 @@ impl SqliteWriter {
             CREATE INDEX IF NOT EXISTS idx_event ON events(event_name);",
         );
 
-        self.conn.execute_batch(&create_sql).map_err(OutputError::Sqlite)?;
+        self.conn
+            .execute_batch(&create_sql)
+            .map_err(OutputError::Sqlite)?;
         self.table_created = true;
 
         Ok(())
@@ -96,10 +98,12 @@ impl SqliteWriter {
 
         if self.table_created {
             // ALTER TABLE to add column
-            self.conn.execute(
-                &format!("ALTER TABLE events ADD COLUMN {} TEXT", safe_col),
-                [],
-            ).map_err(OutputError::Sqlite)?;
+            self.conn
+                .execute(
+                    &format!("ALTER TABLE events ADD COLUMN {} TEXT", safe_col),
+                    [],
+                )
+                .map_err(OutputError::Sqlite)?;
         }
 
         self.columns.push(name.to_string());
@@ -189,7 +193,8 @@ impl SqliteWriter {
                 }
 
                 let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-                stmt.execute(params.as_slice()).map_err(OutputError::Sqlite)?;
+                stmt.execute(params.as_slice())
+                    .map_err(OutputError::Sqlite)?;
             }
         }
 
@@ -214,8 +219,9 @@ impl SqliteWriter {
     /// Write raw logs to a simpler table
     fn write_raw_logs(&mut self, logs: &[Log]) -> Result<()> {
         // Create raw logs table
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS raw_logs (
+        self.conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS raw_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 block_number INTEGER,
                 transaction_hash TEXT,
@@ -229,7 +235,8 @@ impl SqliteWriter {
             );
             CREATE INDEX IF NOT EXISTS idx_raw_block ON raw_logs(block_number);
             CREATE INDEX IF NOT EXISTS idx_raw_address ON raw_logs(address);",
-        ).map_err(OutputError::Sqlite)?;
+            )
+            .map_err(OutputError::Sqlite)?;
 
         let tx = self.conn.transaction().map_err(OutputError::Sqlite)?;
 
@@ -251,7 +258,8 @@ impl SqliteWriter {
                     topics.get(2).map(|t| format!("{:#x}", t)),
                     topics.get(3).map(|t| format!("{:#x}", t)),
                     log.data().data.to_vec(),
-                ]).map_err(OutputError::Sqlite)?;
+                ])
+                .map_err(OutputError::Sqlite)?;
             }
         }
 
@@ -299,7 +307,9 @@ impl OutputWriter for SqliteWriter {
         }
 
         // Optimize database
-        self.conn.execute_batch("PRAGMA optimize;").map_err(OutputError::Sqlite)?;
+        self.conn
+            .execute_batch("PRAGMA optimize;")
+            .map_err(OutputError::Sqlite)?;
 
         Ok(())
     }
@@ -311,10 +321,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_column_name() {
-        assert_eq!(
-            SqliteWriter::sanitize_column_name("from"),
-            "param_from"
-        );
+        assert_eq!(SqliteWriter::sanitize_column_name("from"), "param_from");
         assert_eq!(
             SqliteWriter::sanitize_column_name("token-id"),
             "param_token_id"

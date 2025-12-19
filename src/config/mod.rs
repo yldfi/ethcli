@@ -102,7 +102,10 @@ impl std::str::FromStr for OutputFormat {
             "ndjson" | "jsonl" => Ok(OutputFormat::NdJson),
             "csv" => Ok(OutputFormat::Csv),
             "sqlite" | "db" => Ok(OutputFormat::Sqlite),
-            _ => Err(ConfigError::InvalidFile(format!("Unknown output format: {}", s))),
+            _ => Err(ConfigError::InvalidFile(format!(
+                "Unknown output format: {}",
+                s
+            ))),
         }
     }
 }
@@ -275,7 +278,8 @@ impl ConfigBuilder {
     }
 
     pub fn build(self) -> Result<Config> {
-        let contract = self.contract
+        let contract = self
+            .contract
             .ok_or_else(|| ConfigError::MissingField("contract".to_string()))?;
 
         let from_block = self.from_block.unwrap_or(0);
@@ -299,7 +303,8 @@ impl ConfigBuilder {
             rpc: self.rpc,
             etherscan_key: self.etherscan_key,
             resume: self.resume,
-            checkpoint_path: self.checkpoint_path
+            checkpoint_path: self
+                .checkpoint_path
                 .unwrap_or_else(|| PathBuf::from(".eth-log-fetch.checkpoint")),
             verbosity: self.verbosity,
             quiet: self.quiet,

@@ -84,10 +84,7 @@ impl Endpoint {
 
     /// Get the current block number
     pub async fn get_block_number(&self) -> Result<u64> {
-        let result = tokio::time::timeout(
-            self.timeout,
-            self.provider.get_block_number()
-        ).await;
+        let result = tokio::time::timeout(self.timeout, self.provider.get_block_number()).await;
 
         match result {
             Ok(Ok(block)) => Ok(block),
@@ -100,10 +97,7 @@ impl Endpoint {
     pub async fn get_logs(&self, filter: &Filter) -> Result<(Vec<Log>, Duration)> {
         let start = Instant::now();
 
-        let result = tokio::time::timeout(
-            self.timeout,
-            self.provider.get_logs(filter)
-        ).await;
+        let result = tokio::time::timeout(self.timeout, self.provider.get_logs(filter)).await;
 
         let elapsed = start.elapsed();
 
@@ -113,20 +107,30 @@ impl Endpoint {
                 let err_str = e.to_string().to_lowercase();
 
                 // Check for rate limiting
-                if err_str.contains("rate") || err_str.contains("429") || err_str.contains("too many") {
+                if err_str.contains("rate")
+                    || err_str.contains("429")
+                    || err_str.contains("too many")
+                {
                     return Err(RpcError::RateLimited(self.config.url.clone()).into());
                 }
 
                 // Check for block range too large
-                if err_str.contains("block range") || err_str.contains("exceed") || err_str.contains("too large") {
+                if err_str.contains("block range")
+                    || err_str.contains("exceed")
+                    || err_str.contains("too large")
+                {
                     return Err(RpcError::BlockRangeTooLarge {
                         max: self.config.max_block_range,
-                        requested: 0 // Will be filled by caller
-                    }.into());
+                        requested: 0, // Will be filled by caller
+                    }
+                    .into());
                 }
 
                 // Check for response too large
-                if err_str.contains("response size") || err_str.contains("too many logs") || err_str.contains("10000") {
+                if err_str.contains("response size")
+                    || err_str.contains("too many logs")
+                    || err_str.contains("10000")
+                {
                     return Err(RpcError::ResponseTooLarge(0).into());
                 }
 
@@ -146,8 +150,11 @@ impl Endpoint {
 
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            self.provider.get_balance(test_address).block_id(test_block.into())
-        ).await;
+            self.provider
+                .get_balance(test_address)
+                .block_id(test_block.into()),
+        )
+        .await;
 
         match result {
             Ok(Ok(_)) => Ok(true),

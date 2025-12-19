@@ -121,7 +121,8 @@ impl RpcPool {
         for endpoint in endpoints {
             match endpoint.get_block_number().await {
                 Ok(block) => {
-                    self.health.record_success(endpoint.url(), Duration::from_millis(100));
+                    self.health
+                        .record_success(endpoint.url(), Duration::from_millis(100));
                     return Ok(block);
                 }
                 Err(e) => {
@@ -153,7 +154,8 @@ impl RpcPool {
                     let is_rate_limit = matches!(&e, Error::Rpc(RpcError::RateLimited(_)));
                     let is_timeout = matches!(&e, Error::Rpc(RpcError::Timeout(_)));
 
-                    self.health.record_failure(endpoint.url(), is_rate_limit, is_timeout);
+                    self.health
+                        .record_failure(endpoint.url(), is_rate_limit, is_timeout);
 
                     // Learn from block range errors
                     if let Error::Rpc(RpcError::BlockRangeTooLarge { max, .. }) = &e {
@@ -216,9 +218,19 @@ impl RpcPool {
 
         // Sort by ranking
         available.sort_by(|a, b| {
-            let a_score = ranked.iter().find(|(u, _)| u == a.url()).map(|(_, s)| *s).unwrap_or(0.0);
-            let b_score = ranked.iter().find(|(u, _)| u == b.url()).map(|(_, s)| *s).unwrap_or(0.0);
-            b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal)
+            let a_score = ranked
+                .iter()
+                .find(|(u, _)| u == a.url())
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0);
+            let b_score = ranked
+                .iter()
+                .find(|(u, _)| u == b.url())
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0);
+            b_score
+                .partial_cmp(&a_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Add some randomization among similar scores
@@ -236,7 +248,8 @@ impl RpcPool {
     /// Get effective max block range for an endpoint
     pub fn effective_max_block_range(&self, url: &str) -> u64 {
         if let Some(endpoint) = self.endpoints.iter().find(|e| e.url() == url) {
-            self.health.effective_max_block_range(url, endpoint.max_block_range())
+            self.health
+                .effective_max_block_range(url, endpoint.max_block_range())
         } else {
             10_000 // Default
         }
@@ -246,7 +259,10 @@ impl RpcPool {
     pub fn min_block_range(&self) -> u64 {
         self.endpoints
             .iter()
-            .map(|e| self.health.effective_max_block_range(e.url(), e.max_block_range()))
+            .map(|e| {
+                self.health
+                    .effective_max_block_range(e.url(), e.max_block_range())
+            })
             .min()
             .unwrap_or(10_000)
     }
@@ -256,7 +272,10 @@ impl RpcPool {
         self.endpoints
             .iter()
             .filter(|e| self.health.is_available(e.url()))
-            .map(|e| self.health.effective_max_block_range(e.url(), e.max_block_range()))
+            .map(|e| {
+                self.health
+                    .effective_max_block_range(e.url(), e.max_block_range())
+            })
             .max()
             .unwrap_or(10_000)
     }

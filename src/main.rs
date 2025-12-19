@@ -2,7 +2,8 @@
 
 use clap::{Args, Parser, Subcommand};
 use eth_log_fetcher::{
-    Chain, Config, ConfigFile, EndpointConfig, FetchProgress, LogFetcher, OutputFormat, ProxyConfig, RpcConfig, RpcPool,
+    Chain, Config, ConfigFile, EndpointConfig, FetchProgress, LogFetcher, OutputFormat,
+    ProxyConfig, RpcConfig, RpcPool,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
@@ -11,7 +12,10 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser)]
 #[command(name = "eth-log-fetch")]
-#[command(version, about = "Fast Ethereum historical log fetcher with parallel RPC requests")]
+#[command(
+    version,
+    about = "Fast Ethereum historical log fetcher with parallel RPC requests"
+)]
 #[command(after_help = r#"EXAMPLES:
     # Fetch all Transfer events from USDC contract
     eth-log-fetch -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
@@ -259,9 +263,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
-    let contract = cli.contract.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("Contract address is required. Use -c or --contract")
-    })?;
+    let contract = cli
+        .contract
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Contract address is required. Use -c or --contract"))?;
 
     // Parse chain
     let chain: Chain = cli.chain.parse()?;
@@ -280,10 +285,11 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     let config_file = ConfigFile::load_default().ok().flatten();
 
     // Get Etherscan API key
-    let etherscan_key = cli
-        .etherscan_key
-        .clone()
-        .or_else(|| config_file.as_ref().and_then(|c| c.etherscan_api_key.clone()));
+    let etherscan_key = cli.etherscan_key.clone().or_else(|| {
+        config_file
+            .as_ref()
+            .and_then(|c| c.etherscan_api_key.clone())
+    });
 
     // Build RPC config
     let rpc_config = build_rpc_config(cli, &config_file)?;
@@ -332,10 +338,7 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     let fetcher = LogFetcher::new(config.clone()).await?;
 
     if !cli.quiet {
-        eprintln!(
-            "Using {} RPC endpoints",
-            fetcher.endpoint_count()
-        );
+        eprintln!("Using {} RPC endpoints", fetcher.endpoint_count());
     }
 
     // Set up progress bar
@@ -343,7 +346,9 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
         let pb = ProgressBar::new(100);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% ({msg})")
+                .template(
+                    "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% ({msg})",
+                )
                 .unwrap()
                 .progress_chars("#>-"),
         );
@@ -373,10 +378,7 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     }
 
     // Write output
-    let mut writer = eth_log_fetcher::create_writer(
-        format,
-        cli.output.as_deref(),
-    )?;
+    let mut writer = eth_log_fetcher::create_writer(format, cli.output.as_deref())?;
 
     writer.write_logs(&result)?;
     writer.finalize()?;
@@ -463,10 +465,15 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
             let chain: Chain = cli.chain.parse()?;
             let endpoints = eth_log_fetcher::default_endpoints(chain);
 
-            println!("RPC ENDPOINTS for {} ({} default)\n", chain.display_name(), endpoints.len());
+            println!(
+                "RPC ENDPOINTS for {} ({} default)\n",
+                chain.display_name(),
+                endpoints.len()
+            );
 
             // Group by priority
-            let mut by_priority: std::collections::BTreeMap<u8, Vec<_>> = std::collections::BTreeMap::new();
+            let mut by_priority: std::collections::BTreeMap<u8, Vec<_>> =
+                std::collections::BTreeMap::new();
             for ep in &endpoints {
                 by_priority.entry(ep.priority).or_default().push(ep);
             }
@@ -487,7 +494,10 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
                         } else {
                             format_thousands(ep.max_logs as u64)
                         },
-                        ep.note.as_ref().map(|n| format!(" ({})", n)).unwrap_or_default()
+                        ep.note
+                            .as_ref()
+                            .map(|n| format!(" ({})", n))
+                            .unwrap_or_default()
                     );
                 }
                 println!();
@@ -536,11 +546,7 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
             std::io::Write::flush(&mut std::io::stdout())?;
 
             // Create endpoint directly to test
-            let endpoint = eth_log_fetcher::Endpoint::new(
-                EndpointConfig::new(url),
-                10,
-                None,
-            )?;
+            let endpoint = eth_log_fetcher::Endpoint::new(EndpointConfig::new(url), 10, None)?;
 
             match endpoint.test_archive_support().await {
                 Ok(true) => println!("✓ OK (historical state accessible)"),

@@ -170,11 +170,7 @@ impl Checkpoint {
             return 100.0;
         }
 
-        let completed_blocks: u64 = self
-            .completed_ranges
-            .iter()
-            .map(|(s, e)| e - s + 1)
-            .sum();
+        let completed_blocks: u64 = self.completed_ranges.iter().map(|(s, e)| e - s + 1).sum();
 
         (completed_blocks as f64 / total_blocks as f64) * 100.0
     }

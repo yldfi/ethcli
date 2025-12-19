@@ -41,8 +41,7 @@ impl JsonWriter {
 
         // Write opening bracket for array format
         if !ndjson {
-            writeln!(json_writer.writer, "[")
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            writeln!(json_writer.writer, "[").map_err(|e| OutputError::JsonWrite(e.to_string()))?;
         }
 
         Ok(json_writer)
@@ -50,19 +49,15 @@ impl JsonWriter {
 
     /// Write a single decoded log
     fn write_decoded(&mut self, log: &DecodedLog) -> Result<()> {
-        let json = serde_json::to_string(log)
-            .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+        let json = serde_json::to_string(log).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
 
         if self.ndjson {
-            writeln!(self.writer, "{}", json)
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            writeln!(self.writer, "{}", json).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
         } else {
             if self.first_written {
-                writeln!(self.writer, ",")
-                    .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+                writeln!(self.writer, ",").map_err(|e| OutputError::JsonWrite(e.to_string()))?;
             }
-            write!(self.writer, "  {}", json)
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            write!(self.writer, "  {}", json).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
             self.first_written = true;
         }
 
@@ -72,19 +67,15 @@ impl JsonWriter {
 
     /// Write a single raw log
     fn write_raw(&mut self, log: &Log) -> Result<()> {
-        let json = serde_json::to_string(log)
-            .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+        let json = serde_json::to_string(log).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
 
         if self.ndjson {
-            writeln!(self.writer, "{}", json)
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            writeln!(self.writer, "{}", json).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
         } else {
             if self.first_written {
-                writeln!(self.writer, ",")
-                    .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+                writeln!(self.writer, ",").map_err(|e| OutputError::JsonWrite(e.to_string()))?;
             }
-            write!(self.writer, "  {}", json)
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            write!(self.writer, "  {}", json).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
             self.first_written = true;
         }
 
@@ -112,10 +103,8 @@ impl OutputWriter for JsonWriter {
 
     fn finalize(&mut self) -> Result<()> {
         if !self.ndjson {
-            writeln!(self.writer)
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
-            writeln!(self.writer, "]")
-                .map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            writeln!(self.writer).map_err(|e| OutputError::JsonWrite(e.to_string()))?;
+            writeln!(self.writer, "]").map_err(|e| OutputError::JsonWrite(e.to_string()))?;
         }
 
         self.writer
@@ -129,8 +118,8 @@ impl OutputWriter for JsonWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use alloy::primitives::{Address, B256};
+    use std::collections::HashMap;
 
     fn test_log() -> DecodedLog {
         DecodedLog {

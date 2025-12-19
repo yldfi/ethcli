@@ -145,9 +145,11 @@ impl EventSignature {
                 .into());
             }
         } else {
-            return Err(
-                AbiError::InvalidEventSignature(format!("Too many parts in parameter: {}", param_str)).into(),
-            );
+            return Err(AbiError::InvalidEventSignature(format!(
+                "Too many parts in parameter: {}",
+                param_str
+            ))
+            .into());
         };
 
         // Validate type
@@ -159,14 +161,7 @@ impl EventSignature {
     /// Validate a Solidity type
     fn validate_type(ty: &str) -> Result<()> {
         // Basic type validation
-        let valid_base_types = [
-            "address",
-            "bool",
-            "string",
-            "bytes",
-            "int",
-            "uint",
-        ];
+        let valid_base_types = ["address", "bool", "string", "bytes", "int", "uint"];
 
         let ty_lower = ty.to_lowercase();
 
@@ -234,9 +229,10 @@ mod tests {
 
     #[test]
     fn test_parse_indexed_signature() {
-        let sig =
-            EventSignature::parse("Transfer(address indexed from, address indexed to, uint256 value)")
-                .unwrap();
+        let sig = EventSignature::parse(
+            "Transfer(address indexed from, address indexed to, uint256 value)",
+        )
+        .unwrap();
 
         assert_eq!(sig.name, "Transfer");
         assert_eq!(sig.params.len(), 3);
@@ -269,9 +265,10 @@ mod tests {
 
     #[test]
     fn test_indexed_count() {
-        let sig =
-            EventSignature::parse("Transfer(address indexed from, address indexed to, uint256 value)")
-                .unwrap();
+        let sig = EventSignature::parse(
+            "Transfer(address indexed from, address indexed to, uint256 value)",
+        )
+        .unwrap();
 
         assert_eq!(sig.indexed_params().len(), 2);
         assert_eq!(sig.non_indexed_params().len(), 1);

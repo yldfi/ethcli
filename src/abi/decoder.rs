@@ -6,7 +6,7 @@ use alloy::dyn_abi::{DynSolType, DynSolValue};
 use alloy::json_abi::{Event, JsonAbi};
 use alloy::primitives::{Address, B256};
 use alloy::rpc::types::Log;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// A decoded log with named parameters
@@ -53,7 +53,9 @@ impl DecodedValue {
             DynSolValue::Address(addr) => DecodedValue::Address(format!("{:#x}", addr)),
             DynSolValue::Bool(b) => DecodedValue::Bool(*b),
             DynSolValue::Bytes(b) => DecodedValue::Bytes(format!("0x{}", hex::encode(b))),
-            DynSolValue::FixedBytes(b, _) => DecodedValue::Bytes(format!("0x{}", hex::encode(b.as_slice()))),
+            DynSolValue::FixedBytes(b, _) => {
+                DecodedValue::Bytes(format!("0x{}", hex::encode(b.as_slice())))
+            }
             DynSolValue::Int(i, _) => DecodedValue::Int(i.to_string()),
             DynSolValue::Uint(u, _) => DecodedValue::Uint(u.to_string()),
             DynSolValue::String(s) => DecodedValue::String(s.clone()),
@@ -193,7 +195,9 @@ impl LogDecoder {
     /// Decode a log
     pub fn decode(&self, log: &Log) -> Result<DecodedLog> {
         // Get topic0 (event selector)
-        let topic0 = log.topics().first()
+        let topic0 = log
+            .topics()
+            .first()
             .ok_or_else(|| AbiError::DecodeError("Log has no topics".to_string()))?;
 
         // Find event info
@@ -250,9 +254,9 @@ impl LogDecoder {
             }
             _ => {
                 // Decode from 32-byte topic
-                let decoded = ty
-                    .abi_decode(&topic.0)
-                    .map_err(|e| AbiError::DecodeError(format!("Failed to decode indexed param: {}", e)))?;
+                let decoded = ty.abi_decode(&topic.0).map_err(|e| {
+                    AbiError::DecodeError(format!("Failed to decode indexed param: {}", e))
+                })?;
                 Ok(DecodedValue::from_dyn_sol_value(&decoded))
             }
         }
@@ -266,9 +270,10 @@ impl LogDecoder {
             .map_err(|e| AbiError::DecodeError(format!("Failed to decode data: {}", e)))?;
 
         match decoded {
-            DynSolValue::Tuple(values) => {
-                Ok(values.iter().map(DecodedValue::from_dyn_sol_value).collect())
-            }
+            DynSolValue::Tuple(values) => Ok(values
+                .iter()
+                .map(DecodedValue::from_dyn_sol_value)
+                .collect()),
             _ => Err(AbiError::DecodeError("Expected tuple".to_string()).into()),
         }
     }
@@ -293,7 +298,10 @@ mod tests {
 
     #[test]
     fn test_decoder_from_signature() {
-        let sig = EventSignature::parse("Transfer(address indexed from, address indexed to, uint256 value)").unwrap();
+        let sig = EventSignature::parse(
+            "Transfer(address indexed from, address indexed to, uint256 value)",
+        )
+        .unwrap();
         let decoder = LogDecoder::from_signature(&sig).unwrap();
 
         assert_eq!(decoder.event_names(), vec!["Transfer"]);

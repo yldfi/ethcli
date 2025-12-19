@@ -23,10 +23,7 @@ pub trait OutputWriter {
 }
 
 /// Create an output writer based on format and path
-pub fn create_writer(
-    format: OutputFormat,
-    path: Option<&Path>,
-) -> Result<Box<dyn OutputWriter>> {
+pub fn create_writer(format: OutputFormat, path: Option<&Path>) -> Result<Box<dyn OutputWriter>> {
     match format {
         OutputFormat::Json => {
             let writer = JsonWriter::new(path, false)?;

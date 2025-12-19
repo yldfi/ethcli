@@ -54,7 +54,11 @@ impl AbiFetcher {
             url.push_str(&format!("&apikey={}", key));
         }
 
-        tracing::debug!("Fetching ABI from Etherscan for {} on chain {}", address, chain_id);
+        tracing::debug!(
+            "Fetching ABI from Etherscan for {} on chain {}",
+            address,
+            chain_id
+        );
 
         let response = self
             .client
@@ -64,11 +68,9 @@ impl AbiFetcher {
             .map_err(|e| AbiError::EtherscanFetch(format!("Request failed: {}", e)))?;
 
         if !response.status().is_success() {
-            return Err(AbiError::EtherscanFetch(format!(
-                "HTTP error: {}",
-                response.status()
-            ))
-            .into());
+            return Err(
+                AbiError::EtherscanFetch(format!("HTTP error: {}", response.status())).into(),
+            );
         }
 
         let etherscan_response: EtherscanResponse = response
@@ -79,7 +81,10 @@ impl AbiFetcher {
         // Check for errors
         if etherscan_response.status != "1" {
             let message = etherscan_response.message;
-            let result = etherscan_response.result.as_str().unwrap_or("Unknown error");
+            let result = etherscan_response
+                .result
+                .as_str()
+                .unwrap_or("Unknown error");
 
             if result.contains("not verified") || message.contains("not verified") {
                 return Err(AbiError::ContractNotVerified(address.to_string()).into());

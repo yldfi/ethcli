@@ -220,13 +220,11 @@ impl LogFetcher {
         if let Some(decoder) = &self.decoder {
             let decoded: Vec<DecodedLog> = all_logs
                 .iter()
-                .filter_map(|log| {
-                    match decoder.decode(log) {
-                        Ok(decoded) => Some(decoded),
-                        Err(e) => {
-                            tracing::debug!("Failed to decode log: {}", e);
-                            None
-                        }
+                .filter_map(|log| match decoder.decode(log) {
+                    Ok(decoded) => Some(decoded),
+                    Err(e) => {
+                        tracing::debug!("Failed to decode log: {}", e);
+                        None
                     }
                 })
                 .collect();
@@ -281,7 +279,9 @@ impl LogFetcher {
                     // Wait and retry
                     retries += 1;
                     if retries > MAX_RETRIES {
-                        return Err(RpcError::RateLimited("Max retries exceeded".to_string()).into());
+                        return Err(
+                            RpcError::RateLimited("Max retries exceeded".to_string()).into()
+                        );
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(retries))).await;
                 }
@@ -367,10 +367,7 @@ impl StreamingFetcher {
     }
 
     /// Stream logs through a channel
-    pub async fn stream(
-        self,
-        tx: mpsc::Sender<Result<FetchResult>>,
-    ) -> Result<()> {
+    pub async fn stream(self, tx: mpsc::Sender<Result<FetchResult>>) -> Result<()> {
         let end_block = self.fetcher.resolve_end_block().await?;
         let from_block = self.fetcher.config.block_range.from_block();
 
