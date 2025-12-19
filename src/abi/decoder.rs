@@ -223,11 +223,27 @@ impl LogDecoder {
         }
 
         // Decode non-indexed parameters (data)
-        if !event_info.data_types.is_empty() && !log.data().data.is_empty() {
-            let decoded = Self::decode_data(&event_info.data_types, &log.data().data)?;
+        if !event_info.data_types.is_empty() {
+            if log.data().data.is_empty() {
+                // Event expects data but none provided - log warning and use empty values
+                tracing::warn!(
+                    "Event '{}' expects {} non-indexed parameters but log data is empty \
+                     (block {:?}, tx {:?}). Using empty placeholder values.",
+                    event_info.name,
+                    event_info.data_types.len(),
+                    log.block_number,
+                    log.transaction_hash
+                );
+                // Insert placeholder empty values for expected params
+                for name in &event_info.data_names {
+                    params.insert(name.clone(), DecodedValue::String("".to_string()));
+                }
+            } else {
+                let decoded = Self::decode_data(&event_info.data_types, &log.data().data)?;
 
-            for (name, value) in event_info.data_names.iter().zip(decoded.into_iter()) {
-                params.insert(name.clone(), value);
+                for (name, value) in event_info.data_names.iter().zip(decoded.into_iter()) {
+                    params.insert(name.clone(), value);
+                }
             }
         }
 

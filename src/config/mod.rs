@@ -285,6 +285,24 @@ impl ConfigBuilder {
         let from_block = self.from_block.unwrap_or(0);
         let to_block = self.to_block.unwrap_or(BlockNumber::Latest);
 
+        // Validate block range: from_block must be <= to_block when to_block is a specific number
+        if let BlockNumber::Number(to) = to_block {
+            if from_block > to {
+                return Err(ConfigError::InvalidBlockNumber(format!(
+                    "from_block ({}) cannot be greater than to_block ({})",
+                    from_block, to
+                ))
+                .into());
+            }
+        }
+
+        // Validate concurrency: must be at least 1
+        if self.rpc.concurrency == 0 {
+            return Err(
+                ConfigError::InvalidFile("concurrency must be at least 1".to_string()).into(),
+            );
+        }
+
         let block_range = BlockRange::Range {
             from: from_block,
             to: to_block,

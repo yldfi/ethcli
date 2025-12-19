@@ -1,6 +1,38 @@
 //! Error types for eth-log-fetcher
 
+use regex::Regex;
+use std::sync::LazyLock;
 use thiserror::Error;
+
+/// Regex patterns for API keys that should be sanitized from error messages
+static API_KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
+        // Query parameter patterns
+        Regex::new(r"(?i)(\?|&)(api_?key|apikey|key|token|secret|auth|password)=[^&\s]+").unwrap(),
+        // Path segment patterns (e.g., /v1/key123abc/)
+        Regex::new(r"/v\d+/[a-zA-Z0-9_-]{20,}(/|$)").unwrap(),
+        // Bearer tokens
+        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_.-]+").unwrap(),
+    ]
+});
+
+/// Sanitize a string to remove potential API keys and secrets
+pub fn sanitize_error_message(msg: &str) -> String {
+    let mut result = msg.to_string();
+    for pattern in API_KEY_PATTERNS.iter() {
+        result = pattern
+            .replace_all(&result, |caps: &regex::Captures| {
+                // Preserve the prefix (?|&) if present
+                if let Some(m) = caps.get(1) {
+                    format!("{}[REDACTED]", m.as_str())
+                } else {
+                    "[REDACTED]".to_string()
+                }
+            })
+            .to_string();
+    }
+    result
+}
 
 /// Main error type for the library
 #[derive(Error, Debug)]
@@ -70,6 +102,9 @@ pub enum RpcError {
 
     #[error("Provider error: {0}")]
     Provider(String),
+
+    #[error("Proxy support not implemented: {0}")]
+    ProxyNotSupported(String),
 }
 
 /// ABI-related errors
@@ -95,6 +130,9 @@ pub enum AbiError {
 
     #[error("ABI file not found: {0}")]
     FileNotFound(String),
+
+    #[error("Failed to initialize HTTP client: {0}")]
+    HttpClientInit(String),
 }
 
 /// Configuration errors
@@ -166,5 +204,48 @@ impl From<String> for Error {
 impl From<&str> for Error {
     fn from(s: &str) -> Self {
         Error::Other(s.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_api_key_query_param() {
+        let url = "https://api.example.com?apikey=secret123&foo=bar";
+        let sanitized = sanitize_error_message(url);
+        assert!(!sanitized.contains("secret123"));
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(sanitized.contains("foo=bar"));
+    }
+
+    #[test]
+    fn test_sanitize_multiple_keys() {
+        let url = "https://api.example.com?key=abc123&token=xyz789";
+        let sanitized = sanitize_error_message(url);
+        assert!(!sanitized.contains("abc123"));
+        assert!(!sanitized.contains("xyz789"));
+    }
+
+    #[test]
+    fn test_sanitize_path_segment_key() {
+        let url = "https://eth-mainnet.alchemyapi.io/v2/asdflkjhasdf1234567890123456";
+        let sanitized = sanitize_error_message(url);
+        assert!(!sanitized.contains("asdflkjhasdf1234567890123456"));
+    }
+
+    #[test]
+    fn test_sanitize_no_key() {
+        let msg = "Connection failed: timeout after 30s";
+        let sanitized = sanitize_error_message(msg);
+        assert_eq!(sanitized, msg);
+    }
+
+    #[test]
+    fn test_sanitize_bearer_token() {
+        let msg = "Request failed with Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+        let sanitized = sanitize_error_message(msg);
+        assert!(!sanitized.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
     }
 }

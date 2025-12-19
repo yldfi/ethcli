@@ -2,7 +2,7 @@
 
 use crate::abi::DecodedLog;
 use crate::error::{OutputError, Result};
-use crate::fetcher::FetchResult;
+use crate::fetcher::{FetchLogs, FetchResult};
 use crate::output::OutputWriter;
 use alloy::rpc::types::Log;
 use std::fs::File;
@@ -86,13 +86,13 @@ impl JsonWriter {
 
 impl OutputWriter for JsonWriter {
     fn write_logs(&mut self, result: &FetchResult) -> Result<()> {
-        match result {
-            FetchResult::Decoded(logs) => {
+        match &result.logs {
+            FetchLogs::Decoded(logs) => {
                 for log in logs {
                     self.write_decoded(log)?;
                 }
             }
-            FetchResult::Raw(logs) => {
+            FetchLogs::Raw(logs) => {
                 for log in logs {
                     self.write_raw(log)?;
                 }
@@ -121,6 +121,7 @@ mod tests {
     use alloy::primitives::{Address, B256};
     use std::collections::HashMap;
 
+    #[allow(dead_code)]
     fn test_log() -> DecodedLog {
         DecodedLog {
             block_number: 12345,

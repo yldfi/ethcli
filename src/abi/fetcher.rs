@@ -6,8 +6,34 @@ use crate::config::Chain;
 use crate::error::{AbiError, Result};
 use alloy::json_abi::JsonAbi;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::path::Path;
 use std::time::Duration;
+
+/// URL-encode a string for safe use in query parameters
+/// Only encodes characters that are unsafe in URLs
+fn urlencoding_encode(input: &str) -> Cow<'_, str> {
+    let needs_encoding = input
+        .bytes()
+        .any(|b| !matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~'));
+
+    if !needs_encoding {
+        return Cow::Borrowed(input);
+    }
+
+    let mut encoded = String::with_capacity(input.len() * 3);
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    Cow::Owned(encoded)
+}
 
 /// Etherscan API response
 #[derive(Debug, Deserialize)]
@@ -27,13 +53,16 @@ pub struct AbiFetcher {
 
 impl AbiFetcher {
     /// Create a new ABI fetcher
-    pub fn new(api_key: Option<String>) -> Self {
+    ///
+    /// Returns an error if the HTTP client cannot be initialized (rare, usually
+    /// indicates TLS backend issues).
+    pub fn new(api_key: Option<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("Failed to build HTTP client");
+            .map_err(|e| AbiError::HttpClientInit(e.to_string()))?;
 
-        Self { client, api_key }
+        Ok(Self { client, api_key })
     }
 
     /// Fetch ABI from Etherscan API v2
@@ -43,16 +72,22 @@ impl AbiFetcher {
     pub async fn fetch_from_etherscan(&self, chain: Chain, address: &str) -> Result<JsonAbi> {
         let chain_id = chain.chain_id();
 
-        // Build URL with API v2
-        let mut url = format!(
+        // URL-encode the address to prevent parameter injection
+        let encoded_address: Cow<str> = urlencoding_encode(address);
+
+        // Build URL with API v2 using proper URL encoding to prevent parameter injection
+        let base_url = format!(
             "https://api.etherscan.io/v2/api?chainid={}&module=contract&action=getabi&address={}",
-            chain_id, address
+            chain_id, encoded_address
         );
 
-        // Add API key if available
-        if let Some(key) = &self.api_key {
-            url.push_str(&format!("&apikey={}", key));
-        }
+        let url = if let Some(key) = &self.api_key {
+            // URL-encode the API key to prevent injection attacks
+            let encoded_key: Cow<str> = urlencoding_encode(key);
+            format!("{}&apikey={}", base_url, encoded_key)
+        } else {
+            base_url
+        };
 
         tracing::debug!(
             "Fetching ABI from Etherscan for {} on chain {}",
@@ -60,12 +95,12 @@ impl AbiFetcher {
             chain_id
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| AbiError::EtherscanFetch(format!("Request failed: {}", e)))?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            AbiError::EtherscanFetch(format!(
+                "Request failed: {}",
+                crate::error::sanitize_error_message(&e.to_string())
+            ))
+        })?;
 
         if !response.status().is_success() {
             return Err(
@@ -73,10 +108,12 @@ impl AbiFetcher {
             );
         }
 
-        let etherscan_response: EtherscanResponse = response
-            .json()
-            .await
-            .map_err(|e| AbiError::EtherscanFetch(format!("Failed to parse response: {}", e)))?;
+        let etherscan_response: EtherscanResponse = response.json().await.map_err(|e| {
+            AbiError::EtherscanFetch(format!(
+                "Failed to parse response: {}",
+                crate::error::sanitize_error_message(&e.to_string())
+            ))
+        })?;
 
         // Check for errors
         if etherscan_response.status != "1" {
@@ -137,9 +174,13 @@ impl AbiFetcher {
     }
 }
 
-impl Default for AbiFetcher {
-    fn default() -> Self {
-        Self::new(None)
+impl AbiFetcher {
+    /// Create a new ABI fetcher with default settings (no API key)
+    ///
+    /// # Panics
+    /// Panics if the HTTP client cannot be initialized (extremely rare).
+    pub fn new_default() -> Self {
+        Self::new(None).expect("Failed to initialize HTTP client")
     }
 }
 
@@ -149,10 +190,10 @@ mod tests {
 
     #[test]
     fn test_fetcher_creation() {
-        let fetcher = AbiFetcher::new(Some("test_key".to_string()));
+        let fetcher = AbiFetcher::new(Some("test_key".to_string())).unwrap();
         assert!(fetcher.api_key.is_some());
 
-        let fetcher = AbiFetcher::default();
+        let fetcher = AbiFetcher::new_default();
         assert!(fetcher.api_key.is_none());
     }
 
@@ -160,7 +201,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_fetch_usdc_abi() {
-        let fetcher = AbiFetcher::default();
+        let fetcher = AbiFetcher::new_default();
         let result = fetcher
             .fetch_from_etherscan(
                 Chain::Ethereum,

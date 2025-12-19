@@ -13,9 +13,47 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Statistics about a fetch operation
+#[derive(Debug, Clone, Default)]
+pub struct FetchStats {
+    /// Total chunks attempted
+    pub chunks_total: usize,
+    /// Successfully fetched chunks
+    pub chunks_succeeded: usize,
+    /// Failed chunks
+    pub chunks_failed: usize,
+    /// Block ranges that failed (start, end, error message)
+    pub failed_ranges: Vec<(u64, u64, String)>,
+}
+
+impl FetchStats {
+    /// Check if all chunks succeeded
+    pub fn is_complete(&self) -> bool {
+        self.chunks_failed == 0
+    }
+
+    /// Get success rate as percentage
+    pub fn success_rate(&self) -> f64 {
+        if self.chunks_total == 0 {
+            100.0
+        } else {
+            (self.chunks_succeeded as f64 / self.chunks_total as f64) * 100.0
+        }
+    }
+}
+
 /// Result of a fetch operation
 #[derive(Debug)]
-pub enum FetchResult {
+pub struct FetchResult {
+    /// The fetched logs
+    pub logs: FetchLogs,
+    /// Statistics about the fetch operation
+    pub stats: FetchStats,
+}
+
+/// The actual log data
+#[derive(Debug)]
+pub enum FetchLogs {
     /// Raw logs (undecoded)
     Raw(Vec<Log>),
     /// Decoded logs
@@ -24,14 +62,24 @@ pub enum FetchResult {
 
 impl FetchResult {
     pub fn len(&self) -> usize {
-        match self {
-            FetchResult::Raw(logs) => logs.len(),
-            FetchResult::Decoded(logs) => logs.len(),
+        match &self.logs {
+            FetchLogs::Raw(logs) => logs.len(),
+            FetchLogs::Decoded(logs) => logs.len(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Check if the fetch was complete (no failures)
+    pub fn is_complete(&self) -> bool {
+        self.stats.is_complete()
+    }
+
+    /// Get failed ranges if any
+    pub fn failed_ranges(&self) -> &[(u64, u64, String)] {
+        &self.stats.failed_ranges
     }
 }
 
@@ -96,13 +144,13 @@ impl LogFetcher {
 
         // If ABI file provided, load it
         if let Some(abi_path) = &config.abi_path {
-            let fetcher = AbiFetcher::default();
+            let fetcher = AbiFetcher::new(None)?;
             let abi = fetcher.load_from_file(abi_path)?;
             return LogDecoder::from_abi(&abi);
         }
 
         // Try to fetch ABI from Etherscan
-        let fetcher = AbiFetcher::new(config.etherscan_key.clone());
+        let fetcher = AbiFetcher::new(config.etherscan_key.clone())?;
         let abi = fetcher
             .fetch_from_etherscan(config.chain, &config.contract)
             .await?;
@@ -119,6 +167,11 @@ impl LogFetcher {
     }
 
     /// Fetch all logs
+    ///
+    /// **Warning:** This method collects ALL logs into memory before returning.
+    /// For large block ranges or high-activity contracts, this can cause out-of-memory errors.
+    /// Consider using `StreamingFetcher::fetch_streaming()` for large datasets, which
+    /// processes logs in chunks and writes them incrementally to disk.
     pub async fn fetch_all(&self) -> Result<FetchResult> {
         let end_block = self.resolve_end_block().await?;
         let from_block = self.config.block_range.from_block();
@@ -153,26 +206,34 @@ impl LogFetcher {
 
         // Fetch chunks in parallel
         let concurrency = self.config.rpc.concurrency;
+        let max_retries = self.config.rpc.max_retries;
         let logs_count = Arc::new(AtomicU64::new(0));
+        let blocks_completed = Arc::new(AtomicU64::new(0));
         let start_time = std::time::Instant::now();
 
-        let results: Vec<Result<Vec<Log>>> = stream::iter(chunks.clone())
+        // Note: buffer_unordered doesn't preserve order, so we carry chunk info through
+        let results: Vec<(u64, u64, Result<Vec<Log>>)> = stream::iter(chunks.clone())
             .map(|(from, to)| {
                 let filter = base_filter.clone().from_block(from).to_block(to);
                 let pool = &self.pool;
                 let logs_count = logs_count.clone();
+                let blocks_completed = blocks_completed.clone();
                 let callback = &self.progress_callback;
                 let total_blocks = end_block - from_block + 1;
 
                 async move {
-                    let result = Self::fetch_chunk_with_retry(pool, &filter, from, to).await;
+                    let result =
+                        Self::fetch_chunk_with_retry(pool, &filter, from, to, max_retries).await;
 
                     if let Ok(ref logs) = result {
                         let count = logs_count.fetch_add(logs.len() as u64, Ordering::Relaxed);
+                        // Track actual blocks completed (chunk size), not position
+                        let chunk_size = to - from + 1;
+                        let blocks_done =
+                            blocks_completed.fetch_add(chunk_size, Ordering::Relaxed) + chunk_size;
 
                         if let Some(cb) = callback {
                             let elapsed = start_time.elapsed().as_secs_f64();
-                            let blocks_done = to - from_block + 1;
                             cb(FetchProgress {
                                 current_block: to,
                                 total_blocks,
@@ -187,23 +248,53 @@ impl LogFetcher {
                         }
                     }
 
-                    result
+                    // Return chunk bounds with result to preserve attribution
+                    (from, to, result)
                 }
             })
             .buffer_unordered(concurrency)
             .collect()
             .await;
 
-        // Collect all logs
+        // Collect all logs and track failures
         let mut all_logs = Vec::new();
-        for result in results {
+        let mut stats = FetchStats {
+            chunks_total: chunks.len(),
+            chunks_succeeded: 0,
+            chunks_failed: 0,
+            failed_ranges: Vec::new(),
+        };
+
+        // Process results - chunk bounds are carried with each result for correct attribution
+        for (chunk_from, chunk_to, result) in results {
             match result {
-                Ok(logs) => all_logs.extend(logs),
+                Ok(logs) => {
+                    all_logs.extend(logs);
+                    stats.chunks_succeeded += 1;
+                }
                 Err(e) => {
-                    tracing::warn!("Chunk fetch failed: {}", e);
-                    // Continue with other chunks
+                    tracing::warn!(
+                        "Chunk fetch failed for blocks {}-{}: {}",
+                        chunk_from,
+                        chunk_to,
+                        e
+                    );
+                    stats.chunks_failed += 1;
+                    stats
+                        .failed_ranges
+                        .push((chunk_from, chunk_to, e.to_string()));
                 }
             }
+        }
+
+        // Log summary if there were failures
+        if stats.chunks_failed > 0 {
+            tracing::warn!(
+                "Fetch completed with {} failed chunks out of {} ({:.1}% success rate)",
+                stats.chunks_failed,
+                stats.chunks_total,
+                stats.success_rate()
+            );
         }
 
         // Sort by block number and log index
@@ -217,7 +308,7 @@ impl LogFetcher {
         });
 
         // Decode if needed
-        if let Some(decoder) = &self.decoder {
+        let logs = if let Some(decoder) = &self.decoder {
             let decoded: Vec<DecodedLog> = all_logs
                 .iter()
                 .filter_map(|log| match decoder.decode(log) {
@@ -229,10 +320,12 @@ impl LogFetcher {
                 })
                 .collect();
 
-            Ok(FetchResult::Decoded(decoded))
+            FetchLogs::Decoded(decoded)
         } else {
-            Ok(FetchResult::Raw(all_logs))
-        }
+            FetchLogs::Raw(all_logs)
+        };
+
+        Ok(FetchResult { logs, stats })
     }
 
     /// Fetch a single chunk with retry and adaptive splitting
@@ -241,12 +334,12 @@ impl LogFetcher {
         filter: &Filter,
         from: u64,
         to: u64,
+        max_retries: u32,
     ) -> Result<Vec<Log>> {
         let mut current_from = from;
         let mut current_to = to;
         let mut all_logs = Vec::new();
         let mut retries = 0;
-        const MAX_RETRIES: u32 = 3;
 
         while current_from <= to {
             let chunk_filter = filter.clone().from_block(current_from).to_block(current_to);
@@ -276,18 +369,20 @@ impl LogFetcher {
                     );
                 }
                 Err(Error::Rpc(RpcError::RateLimited(_))) => {
-                    // Wait and retry
+                    // Wait and retry with exponential backoff (capped at 60s)
                     retries += 1;
-                    if retries > MAX_RETRIES {
+                    if retries > max_retries {
                         return Err(
                             RpcError::RateLimited("Max retries exceeded".to_string()).into()
                         );
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(retries))).await;
+                    // Use saturating_pow to prevent overflow, cap at 60 seconds
+                    let backoff_secs = 2u64.saturating_pow(retries).min(60);
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 }
                 Err(e) => {
                     retries += 1;
-                    if retries > MAX_RETRIES {
+                    if retries > max_retries {
                         return Err(e);
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -308,12 +403,23 @@ impl LogFetcher {
 
     /// Calculate optimal chunks for fetching
     fn calculate_chunks(from: u64, to: u64, max_range: u64) -> Vec<(u64, u64)> {
+        // Handle unlimited range (max_range == 0) - return single chunk
+        if max_range == 0 {
+            return vec![(from, to)];
+        }
+
         let mut chunks = Vec::new();
         let mut current = from;
 
         while current <= to {
-            let chunk_end = (current + max_range - 1).min(to);
+            // Use saturating_add to prevent overflow, then subtract 1
+            // This calculates: current + max_range - 1, clamped to not exceed to
+            let chunk_end = current.saturating_add(max_range.saturating_sub(1)).min(to);
             chunks.push((current, chunk_end));
+            // Prevent infinite loop if chunk_end == u64::MAX
+            if chunk_end == u64::MAX {
+                break;
+            }
             current = chunk_end + 1;
         }
 
@@ -331,10 +437,10 @@ impl LogFetcher {
     }
 }
 
-/// Streaming fetcher for large datasets
+/// Streaming fetcher for large datasets with checkpoint support
 pub struct StreamingFetcher {
     fetcher: LogFetcher,
-    checkpoint_manager: Option<CheckpointManager>,
+    checkpoint_manager: Option<std::sync::Arc<parking_lot::Mutex<CheckpointManager>>>,
 }
 
 impl StreamingFetcher {
@@ -362,95 +468,215 @@ impl StreamingFetcher {
             },
         )?;
 
-        self.checkpoint_manager = Some(manager);
+        self.checkpoint_manager = Some(std::sync::Arc::new(parking_lot::Mutex::new(manager)));
         Ok(self)
     }
 
-    /// Stream logs through a channel
-    pub async fn stream(self, tx: mpsc::Sender<Result<FetchResult>>) -> Result<()> {
+    /// Get the RPC pool
+    pub fn pool(&self) -> &RpcPool {
+        &self.fetcher.pool
+    }
+
+    /// Get endpoint count
+    pub fn endpoint_count(&self) -> usize {
+        self.fetcher.pool.endpoint_count()
+    }
+
+    /// Fetch logs with streaming output, calling handler for each chunk
+    /// Returns aggregated stats
+    ///
+    /// # Output Order
+    ///
+    /// **Important:** Chunks are processed in completion order, not block order.
+    /// This means logs from later blocks may be written before logs from earlier blocks.
+    /// This is a design choice to maximize throughput - using ordered streams would
+    /// significantly reduce parallelism benefits.
+    ///
+    /// If you need block-ordered output:
+    /// - Use `LogFetcher::fetch_all()` which sorts results before returning
+    /// - Or post-process the output file to sort by block number
+    ///
+    /// Uses parallel fetching with `buffer_unordered` for improved performance
+    /// while maintaining sequential handler calls for checkpoint consistency.
+    pub async fn fetch_streaming<F>(&mut self, mut handler: F) -> Result<FetchStats>
+    where
+        F: FnMut(FetchResult) -> Result<()>,
+    {
         let end_block = self.fetcher.resolve_end_block().await?;
         let from_block = self.fetcher.config.block_range.from_block();
 
         // Get remaining ranges if resuming
         let ranges = if let Some(ref manager) = self.checkpoint_manager {
-            manager.remaining_ranges(end_block)
+            manager.lock().remaining_ranges(end_block)
         } else {
             vec![(from_block, end_block)]
         };
 
         if ranges.is_empty() {
             tracing::info!("All ranges already completed");
-            return Ok(());
+            return Ok(FetchStats::default());
         }
 
         let max_range = self.fetcher.pool.max_block_range();
 
-        // Process each range
-        for (range_from, range_to) in ranges {
-            let chunks = LogFetcher::calculate_chunks(range_from, range_to, max_range);
+        // Calculate all chunks across all ranges
+        let all_chunks: Vec<(u64, u64)> = ranges
+            .iter()
+            .flat_map(|(from, to)| LogFetcher::calculate_chunks(*from, *to, max_range))
+            .collect();
 
-            for (chunk_from, chunk_to) in chunks {
-                // Build filter
-                let address: Address = self
-                    .fetcher
-                    .config
-                    .contract
-                    .parse()
-                    .map_err(|_| Error::from("Invalid contract address"))?;
+        let total_chunks = all_chunks.len();
 
-                let mut filter = Filter::new()
-                    .address(address)
+        let mut stats = FetchStats {
+            chunks_total: total_chunks,
+            chunks_succeeded: 0,
+            chunks_failed: 0,
+            failed_ranges: Vec::new(),
+        };
+
+        // Build base filter
+        let address: Address = self
+            .fetcher
+            .config
+            .contract
+            .parse()
+            .map_err(|_| Error::from("Invalid contract address"))?;
+
+        let mut base_filter = Filter::new().address(address);
+
+        // Add event topic if specified
+        if let Some(event_str) = &self.fetcher.config.event {
+            let sig = EventSignature::parse(event_str)?;
+            base_filter = base_filter.event_signature(sig.topic);
+        }
+
+        let concurrency = self.fetcher.config.rpc.concurrency;
+        let max_retries = self.fetcher.config.rpc.max_retries;
+
+        // Create parallel fetch stream
+        let mut result_stream = stream::iter(all_chunks)
+            .map(|(chunk_from, chunk_to)| {
+                let filter = base_filter
+                    .clone()
                     .from_block(chunk_from)
                     .to_block(chunk_to);
+                let pool = &self.fetcher.pool;
 
-                // Add event topic if specified
-                if let Some(event_str) = &self.fetcher.config.event {
-                    let sig = EventSignature::parse(event_str)?;
-                    filter = filter.event_signature(sig.topic);
+                async move {
+                    let result = LogFetcher::fetch_chunk_with_retry(
+                        pool,
+                        &filter,
+                        chunk_from,
+                        chunk_to,
+                        max_retries,
+                    )
+                    .await;
+                    (chunk_from, chunk_to, result)
                 }
+            })
+            .buffer_unordered(concurrency);
 
-                // Fetch
-                let result = LogFetcher::fetch_chunk_with_retry(
-                    &self.fetcher.pool,
-                    &filter,
-                    chunk_from,
-                    chunk_to,
-                )
-                .await;
+        // Process results as they arrive (handler called sequentially)
+        while let Some((chunk_from, chunk_to, result)) = result_stream.next().await {
+            match result {
+                Ok(logs) => {
+                    let logs_count = logs.len() as u64;
 
-                match result {
-                    Ok(logs) => {
-                        let fetch_result = if let Some(decoder) = &self.fetcher.decoder {
-                            let decoded: Vec<DecodedLog> = logs
-                                .iter()
-                                .filter_map(|log| decoder.decode(log).ok())
-                                .collect();
-                            FetchResult::Decoded(decoded)
-                        } else {
-                            FetchResult::Raw(logs)
-                        };
+                    let fetch_logs = if let Some(decoder) = &self.fetcher.decoder {
+                        let mut decode_errors = 0u64;
+                        let decoded: Vec<DecodedLog> = logs
+                            .iter()
+                            .filter_map(|log| match decoder.decode(log) {
+                                Ok(decoded) => Some(decoded),
+                                Err(e) => {
+                                    decode_errors += 1;
+                                    tracing::debug!(
+                                        "Failed to decode log at block {:?}: {}",
+                                        log.block_number,
+                                        e
+                                    );
+                                    None
+                                }
+                            })
+                            .collect();
 
-                        let _logs_count = fetch_result.len() as u64;
-
-                        // Update checkpoint
-                        if let Some(_manager) = self.checkpoint_manager.as_ref() {
-                            // Note: Can't mutate through ref, would need interior mutability
+                        if decode_errors > 0 {
+                            tracing::warn!(
+                                "Chunk {}-{}: {} logs failed to decode out of {}",
+                                chunk_from,
+                                chunk_to,
+                                decode_errors,
+                                logs_count
+                            );
                         }
+                        FetchLogs::Decoded(decoded)
+                    } else {
+                        FetchLogs::Raw(logs)
+                    };
 
-                        if tx.send(Ok(fetch_result)).await.is_err() {
-                            return Ok(()); // Receiver dropped
+                    let fetch_result = FetchResult {
+                        logs: fetch_logs,
+                        stats: FetchStats {
+                            chunks_total: 1,
+                            chunks_succeeded: 1,
+                            chunks_failed: 0,
+                            failed_ranges: Vec::new(),
+                        },
+                    };
+
+                    // Call handler to process/write the chunk
+                    handler(fetch_result)?;
+
+                    // Update checkpoint
+                    if let Some(ref manager) = self.checkpoint_manager {
+                        if let Err(e) = manager
+                            .lock()
+                            .mark_completed(chunk_from, chunk_to, logs_count)
+                        {
+                            tracing::warn!("Failed to update checkpoint: {}", e);
                         }
                     }
-                    Err(e) => {
-                        if tx.send(Err(e)).await.is_err() {
-                            return Ok(());
-                        }
-                    }
+
+                    stats.chunks_succeeded += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Chunk fetch failed for blocks {}-{}: {}",
+                        chunk_from,
+                        chunk_to,
+                        e
+                    );
+                    stats.chunks_failed += 1;
+                    stats
+                        .failed_ranges
+                        .push((chunk_from, chunk_to, e.to_string()));
                 }
             }
         }
 
-        Ok(())
+        // Final checkpoint save
+        if let Some(ref manager) = self.checkpoint_manager {
+            if let Err(e) = manager.lock().save_now() {
+                tracing::warn!("Failed to save final checkpoint: {}", e);
+            }
+        }
+
+        Ok(stats)
+    }
+
+    /// Stream logs through a channel (for async consumers)
+    ///
+    /// Note: Uses `try_send` to avoid potential deadlock with `blocking_send`.
+    /// If channel is full, returns an error. Consider using an unbounded channel
+    /// or increasing channel capacity if you see send failures.
+    pub async fn stream(mut self, tx: mpsc::Sender<Result<FetchResult>>) -> Result<FetchStats> {
+        self.fetch_streaming(|result| {
+            // Use try_send to avoid deadlock - blocking_send can deadlock if
+            // the channel buffer is full and receiver is on the same runtime
+            tx.try_send(Ok(result))
+                .map_err(|e| Error::from(format!("Channel send failed (buffer full?): {}", e)))
+        })
+        .await
     }
 }
 
@@ -472,8 +698,24 @@ mod tests {
 
     #[test]
     fn test_fetch_result_len() {
-        let result = FetchResult::Raw(vec![]);
+        let result = FetchResult {
+            logs: FetchLogs::Raw(vec![]),
+            stats: FetchStats::default(),
+        };
         assert!(result.is_empty());
         assert_eq!(result.len(), 0);
+        assert!(result.is_complete());
+    }
+
+    #[test]
+    fn test_fetch_stats() {
+        let stats = FetchStats {
+            chunks_total: 10,
+            chunks_succeeded: 8,
+            chunks_failed: 2,
+            failed_ranges: vec![(100, 200, "error".to_string())],
+        };
+        assert!(!stats.is_complete());
+        assert!((stats.success_rate() - 80.0).abs() < 0.001);
     }
 }

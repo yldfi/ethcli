@@ -2,9 +2,10 @@
 
 use crate::abi::{DecodedLog, DecodedValue};
 use crate::error::{OutputError, Result};
-use crate::fetcher::FetchResult;
+use crate::fetcher::{FetchLogs, FetchResult};
 use crate::output::OutputWriter;
 use alloy::rpc::types::Log;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -21,6 +22,8 @@ pub struct CsvWriter {
     buffer: Vec<DecodedLog>,
     /// Max rows to buffer before writing header
     max_buffer: usize,
+    /// Columns that appeared after header was written (with count of dropped values)
+    dropped_columns: HashMap<String, usize>,
 }
 
 impl CsvWriter {
@@ -41,7 +44,8 @@ impl CsvWriter {
             columns: Vec::new(),
             header_written: false,
             buffer: Vec::new(),
-            max_buffer: 100, // Buffer up to 100 rows to determine columns
+            max_buffer: 1000, // Buffer more rows to determine schema
+            dropped_columns: HashMap::new(),
         })
     }
 
@@ -104,9 +108,25 @@ impl CsvWriter {
         Ok(())
     }
 
+    /// Escape a string value to prevent CSV formula injection
+    /// Values starting with =, +, -, @, tab, or carriage return can be interpreted
+    /// as formulas by spreadsheet applications (Excel, Google Sheets, etc.)
+    fn escape_formula_injection(s: &str) -> String {
+        if s.is_empty() {
+            return s.to_string();
+        }
+        let first_char = s.chars().next().unwrap();
+        if matches!(first_char, '=' | '+' | '-' | '@' | '\t' | '\r') {
+            // Prefix with single quote to prevent formula interpretation
+            format!("'{}", s)
+        } else {
+            s.to_string()
+        }
+    }
+
     /// Convert a decoded value to string
     fn value_to_string(value: &DecodedValue) -> String {
-        match value {
+        let raw = match value {
             DecodedValue::Address(s) => s.clone(),
             DecodedValue::Uint(s) => s.clone(),
             DecodedValue::Int(s) => s.clone(),
@@ -121,7 +141,9 @@ impl CsvWriter {
                 let items: Vec<String> = arr.iter().map(Self::value_to_string).collect();
                 format!("({})", items.join(","))
             }
-        }
+        };
+        // Apply formula injection protection
+        Self::escape_formula_injection(&raw)
     }
 
     /// Flush buffer and write header
@@ -188,8 +210,8 @@ impl CsvWriter {
 
 impl OutputWriter for CsvWriter {
     fn write_logs(&mut self, result: &FetchResult) -> Result<()> {
-        match result {
-            FetchResult::Decoded(logs) => {
+        match &result.logs {
+            FetchLogs::Decoded(logs) => {
                 for log in logs {
                     if !self.header_written {
                         // Buffer rows until we have enough to determine columns
@@ -200,26 +222,18 @@ impl OutputWriter for CsvWriter {
                             self.flush_buffer()?;
                         }
                     } else {
-                        // Check for new columns
-                        let new_cols: Vec<String> = log
-                            .params
-                            .keys()
-                            .filter(|k| !self.columns.contains(*k))
-                            .cloned()
-                            .collect();
-
-                        if !new_cols.is_empty() {
-                            tracing::warn!(
-                                "New columns found after header written: {:?}",
-                                new_cols
-                            );
+                        // Track new columns that appeared after header was written
+                        for key in log.params.keys() {
+                            if !self.columns.contains(key) {
+                                *self.dropped_columns.entry(key.clone()).or_insert(0) += 1;
+                            }
                         }
 
                         self.write_row(log)?;
                     }
                 }
             }
-            FetchResult::Raw(logs) => {
+            FetchLogs::Raw(logs) => {
                 for log in logs {
                     self.write_raw_log(log)?;
                 }
@@ -237,6 +251,22 @@ impl OutputWriter for CsvWriter {
         self.writer
             .flush()
             .map_err(|e| OutputError::CsvWrite(e.to_string()))?;
+
+        // Report dropped columns (data loss warning)
+        if !self.dropped_columns.is_empty() {
+            let total_dropped: usize = self.dropped_columns.values().sum();
+            tracing::error!(
+                "CSV schema change detected: {} values in {} columns were dropped because they appeared after the header was written",
+                total_dropped,
+                self.dropped_columns.len()
+            );
+            for (col, count) in &self.dropped_columns {
+                tracing::error!("  - Column '{}': {} values dropped", col, count);
+            }
+            tracing::warn!(
+                "Consider using JSON or SQLite output format for events with dynamic schemas"
+            );
+        }
 
         Ok(())
     }

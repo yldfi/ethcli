@@ -2,8 +2,8 @@
 
 use clap::{Args, Parser, Subcommand};
 use eth_log_fetcher::{
-    Chain, Config, ConfigFile, EndpointConfig, FetchProgress, LogFetcher, OutputFormat,
-    ProxyConfig, RpcConfig, RpcPool,
+    Chain, Config, ConfigFile, EndpointConfig, FetchProgress, FetchStats, LogFetcher, OutputFormat,
+    ProxyConfig, RpcConfig, RpcPool, StreamingFetcher,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
@@ -79,8 +79,8 @@ struct Cli {
     raw: bool,
 
     /// Number of parallel requests
-    #[arg(short = 'n', long, default_value = "5")]
-    concurrency: usize,
+    #[arg(short = 'n', long)]
+    concurrency: Option<usize>,
 
     /// Resume from checkpoint if available
     #[arg(long)]
@@ -97,6 +97,10 @@ struct Cli {
     /// Suppress progress output
     #[arg(short, long)]
     quiet: bool,
+
+    /// Fail if any chunk fails (default: warn and continue)
+    #[arg(long)]
+    strict: bool,
 
     /// Etherscan API key
     #[arg(long, env = "ETHERSCAN_API_KEY")]
@@ -132,12 +136,12 @@ struct RpcArgs {
     min_priority: u8,
 
     /// Request timeout in seconds
-    #[arg(long, default_value = "30")]
-    timeout: u64,
+    #[arg(long)]
+    timeout: Option<u64>,
 
     /// Max retries per request
-    #[arg(long, default_value = "3")]
-    retries: u32,
+    #[arg(long)]
+    retries: Option<u32>,
 }
 
 #[derive(Args)]
@@ -291,6 +295,14 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
             .and_then(|c| c.etherscan_api_key.clone())
     });
 
+    // Apply defaults: CLI > config file > hardcoded defaults
+    let concurrency = cli.concurrency.unwrap_or_else(|| {
+        config_file
+            .as_ref()
+            .map(|c| c.settings.concurrency)
+            .unwrap_or(5)
+    });
+
     // Build RPC config
     let rpc_config = build_rpc_config(cli, &config_file)?;
 
@@ -301,7 +313,7 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
         .from_block(cli.from_block)
         .to_block(to_block)
         .output_format(format)
-        .concurrency(cli.concurrency)
+        .concurrency(concurrency)
         .raw(cli.raw)
         .resume(cli.resume)
         .quiet(cli.quiet)
@@ -330,12 +342,80 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
 
     let config = builder.build()?;
 
-    // Create fetcher
+    // Create output writer early for streaming mode
+    let mut writer = eth_log_fetcher::create_writer(format, cli.output.as_deref())?;
+
     if !cli.quiet {
         eprintln!("Connecting to {} endpoints...", chain.display_name());
     }
 
-    let fetcher = LogFetcher::new(config.clone()).await?;
+    let start = Instant::now();
+    let (total_logs, stats) = if cli.resume {
+        // Use streaming mode with checkpoint support
+        run_streaming_fetch(cli, config, &mut writer).await?
+    } else {
+        // Use batch mode (faster for smaller queries)
+        run_batch_fetch(cli, config, &mut writer).await?
+    };
+    let elapsed = start.elapsed();
+
+    writer.finalize()?;
+
+    // Report failures
+    if !stats.is_complete() {
+        if cli.strict {
+            eprintln!(
+                "Error: {} of {} chunks failed (--strict mode)",
+                stats.chunks_failed, stats.chunks_total
+            );
+            for (from, to, err) in &stats.failed_ranges {
+                eprintln!("  - Blocks {}-{}: {}", from, to, err);
+            }
+            return Err(anyhow::anyhow!(
+                "Fetch incomplete: {} chunks failed",
+                stats.chunks_failed
+            ));
+        } else {
+            eprintln!(
+                "Warning: {} of {} chunks failed ({:.1}% success rate)",
+                stats.chunks_failed,
+                stats.chunks_total,
+                stats.success_rate()
+            );
+            if cli.verbose > 0 {
+                for (from, to, err) in &stats.failed_ranges {
+                    eprintln!("  - Blocks {}-{}: {}", from, to, err);
+                }
+            }
+        }
+    }
+
+    if !cli.quiet {
+        let status = if stats.is_complete() {
+            String::new()
+        } else {
+            format!(" (incomplete: {} chunks failed)", stats.chunks_failed)
+        };
+        let mode = if cli.resume { " [streaming]" } else { "" };
+        eprintln!(
+            "Fetched {} logs in {:.2}s{}{}",
+            total_logs,
+            elapsed.as_secs_f64(),
+            status,
+            mode
+        );
+    }
+
+    Ok(())
+}
+
+/// Run fetch in batch mode (loads all into memory, faster for small queries)
+async fn run_batch_fetch(
+    cli: &Cli,
+    config: Config,
+    writer: &mut Box<dyn eth_log_fetcher::OutputWriter>,
+) -> anyhow::Result<(usize, FetchStats)> {
+    let fetcher = LogFetcher::new(config).await?;
 
     if !cli.quiet {
         eprintln!("Using {} RPC endpoints", fetcher.endpoint_count());
@@ -368,30 +448,84 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
         }
     });
 
-    // Fetch logs
-    let start = Instant::now();
     let result = fetcher.fetch_all().await?;
-    let elapsed = start.elapsed();
 
     if let Some(ref pb) = pb {
         pb.finish_and_clear();
     }
 
-    // Write output
-    let mut writer = eth_log_fetcher::create_writer(format, cli.output.as_deref())?;
+    let total_logs = result.len();
+    let stats = result.stats.clone();
 
     writer.write_logs(&result)?;
-    writer.finalize()?;
+
+    Ok((total_logs, stats))
+}
+
+/// Run fetch in streaming mode (writes incrementally, supports resume)
+async fn run_streaming_fetch(
+    cli: &Cli,
+    config: Config,
+    writer: &mut Box<dyn eth_log_fetcher::OutputWriter>,
+) -> anyhow::Result<(usize, FetchStats)> {
+    let mut fetcher = StreamingFetcher::new(config.clone()).await?;
+
+    // Enable checkpointing if path specified or use default
+    let checkpoint_path = cli.checkpoint.clone().unwrap_or_else(|| {
+        PathBuf::from(format!(
+            ".eth-log-fetch-{}.checkpoint",
+            cli.contract
+                .as_ref()
+                .map(|c| &c[..8.min(c.len())])
+                .unwrap_or("default")
+        ))
+    });
+
+    fetcher = fetcher.with_checkpoint(&checkpoint_path)?;
 
     if !cli.quiet {
         eprintln!(
-            "Fetched {} logs in {:.2}s",
-            result.len(),
-            elapsed.as_secs_f64()
+            "Using {} RPC endpoints (streaming mode)",
+            fetcher.endpoint_count()
         );
+        eprintln!("Checkpoint: {}", checkpoint_path.display());
     }
 
-    Ok(())
+    // Set up progress (simplified for streaming)
+    let pb = if !cli.quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed_precise}] {msg}")
+                .unwrap(),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
+
+    let mut total_logs = 0usize;
+
+    // Stream logs and write incrementally
+    let stats = fetcher
+        .fetch_streaming(|result| {
+            total_logs += result.len();
+
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("{} logs fetched", total_logs));
+            }
+
+            writer.write_logs(&result)?;
+            Ok(())
+        })
+        .await?;
+
+    if let Some(ref pb) = pb {
+        pb.finish_and_clear();
+    }
+
+    Ok((total_logs, stats))
 }
 
 fn build_rpc_config(cli: &Cli, config_file: &Option<ConfigFile>) -> anyhow::Result<RpcConfig> {
@@ -436,9 +570,28 @@ fn build_rpc_config(cli: &Cli, config_file: &Option<ConfigFile>) -> anyhow::Resu
     }
 
     rpc_config.min_priority = cli.rpc.min_priority;
-    rpc_config.timeout_secs = cli.rpc.timeout;
-    rpc_config.max_retries = cli.rpc.retries;
-    rpc_config.concurrency = cli.concurrency;
+
+    // Apply defaults: CLI > config file > hardcoded defaults
+    rpc_config.timeout_secs = cli.rpc.timeout.unwrap_or_else(|| {
+        config_file
+            .as_ref()
+            .map(|c| c.settings.timeout_seconds)
+            .unwrap_or(30)
+    });
+
+    rpc_config.max_retries = cli.rpc.retries.unwrap_or_else(|| {
+        config_file
+            .as_ref()
+            .map(|c| c.settings.retry_attempts)
+            .unwrap_or(3)
+    });
+
+    rpc_config.concurrency = cli.concurrency.unwrap_or_else(|| {
+        config_file
+            .as_ref()
+            .map(|c| c.settings.concurrency)
+            .unwrap_or(5)
+    });
 
     // Proxy config
     if cli.proxy.proxy.is_some() || cli.proxy.proxy_file.is_some() {

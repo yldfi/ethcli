@@ -44,7 +44,9 @@ pub use config::{
     OutputConfig, OutputFormat, ProxyConfig, RpcConfig,
 };
 pub use error::{AbiError, CheckpointError, ConfigError, Error, OutputError, Result, RpcError};
-pub use fetcher::{FetchProgress, FetchResult, LogFetcher, StreamingFetcher};
+pub use fetcher::{
+    FetchLogs, FetchProgress, FetchResult, FetchStats, LogFetcher, StreamingFetcher,
+};
 pub use output::{create_writer, CsvWriter, JsonWriter, OutputWriter, SqliteWriter};
 pub use proxy::{validate_proxy_url, ProxyRotator, RotationMode};
 pub use rpc::{default_endpoints, Endpoint, EndpointHealth, HealthTracker, RpcPool};

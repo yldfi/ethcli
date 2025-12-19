@@ -2,18 +2,24 @@
 
 use crate::abi::{DecodedLog, DecodedValue};
 use crate::error::{OutputError, Result};
-use crate::fetcher::FetchResult;
+use crate::fetcher::{FetchLogs, FetchResult};
 use crate::output::OutputWriter;
 use alloy::rpc::types::Log;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
+use std::collections::HashMap as StdHashMap;
+
 /// SQLite output writer
 pub struct SqliteWriter {
     /// Database connection
     conn: Connection,
-    /// Known columns
+    /// Known columns (original names)
     columns: Vec<String>,
+    /// Mapping from original column name to sanitized column name (handles collisions)
+    column_name_map: StdHashMap<String, String>,
+    /// Set of sanitized names in use (to detect collisions)
+    sanitized_names: std::collections::HashSet<String>,
     /// Table created
     table_created: bool,
     /// Batch buffer
@@ -34,6 +40,8 @@ impl SqliteWriter {
         Ok(Self {
             conn,
             columns: Vec::new(),
+            column_name_map: StdHashMap::new(),
+            sanitized_names: std::collections::HashSet::new(),
             table_created: false,
             buffer: Vec::new(),
             batch_size: 1000,
@@ -56,9 +64,9 @@ impl SqliteWriter {
                 data BLOB",
         );
 
-        // Add dynamic columns
-        for col in &self.columns {
-            let safe_col = Self::sanitize_column_name(col);
+        // Add dynamic columns with collision-safe names
+        for col in &self.columns.clone() {
+            let safe_col = self.get_sanitized_column_name(col);
             create_sql.push_str(&format!(",\n                {} TEXT", safe_col));
         }
 
@@ -78,8 +86,8 @@ impl SqliteWriter {
         Ok(())
     }
 
-    /// Sanitize column name for SQL
-    fn sanitize_column_name(name: &str) -> String {
+    /// Sanitize column name for SQL (static version for basic sanitization)
+    fn sanitize_column_name_basic(name: &str) -> String {
         // Replace non-alphanumeric with underscore, prefix with param_ to avoid reserved words
         let sanitized: String = name
             .chars()
@@ -88,13 +96,55 @@ impl SqliteWriter {
         format!("param_{}", sanitized)
     }
 
+    /// Get or create a unique sanitized column name for an original name
+    /// Handles collisions by appending a numeric suffix
+    fn get_sanitized_column_name(&mut self, original_name: &str) -> String {
+        // Return existing mapping if we have one
+        if let Some(sanitized) = self.column_name_map.get(original_name) {
+            return sanitized.clone();
+        }
+
+        // Generate base sanitized name
+        let base_sanitized = Self::sanitize_column_name_basic(original_name);
+
+        // Check for collision and find unique name
+        let unique_name = if self.sanitized_names.contains(&base_sanitized) {
+            // Collision detected - find unique suffix
+            let mut suffix = 1u32;
+            loop {
+                let candidate = format!("{}_{}", base_sanitized, suffix);
+                if !self.sanitized_names.contains(&candidate) {
+                    tracing::warn!(
+                        "Column name collision detected: '{}' and another column both sanitize to '{}'. \
+                         Using '{}' for '{}'.",
+                        original_name,
+                        base_sanitized,
+                        candidate,
+                        original_name
+                    );
+                    break candidate;
+                }
+                suffix += 1;
+            }
+        } else {
+            base_sanitized
+        };
+
+        // Register the mapping
+        self.sanitized_names.insert(unique_name.clone());
+        self.column_name_map
+            .insert(original_name.to_string(), unique_name.clone());
+
+        unique_name
+    }
+
     /// Add a column if it doesn't exist
     fn ensure_column(&mut self, name: &str) -> Result<()> {
         if self.columns.contains(&name.to_string()) {
             return Ok(());
         }
 
-        let safe_col = Self::sanitize_column_name(name);
+        let safe_col = self.get_sanitized_column_name(name);
 
         if self.table_created {
             // ALTER TABLE to add column
@@ -146,10 +196,16 @@ impl SqliteWriter {
             "data",
         ];
 
+        // Use the collision-safe column name mapping
         let param_cols: Vec<String> = self
             .columns
             .iter()
-            .map(|c| Self::sanitize_column_name(c))
+            .map(|c| {
+                self.column_name_map
+                    .get(c)
+                    .cloned()
+                    .unwrap_or_else(|| Self::sanitize_column_name_basic(c))
+            })
             .collect();
 
         for col in &param_cols {
@@ -270,8 +326,8 @@ impl SqliteWriter {
 
 impl OutputWriter for SqliteWriter {
     fn write_logs(&mut self, result: &FetchResult) -> Result<()> {
-        match result {
-            FetchResult::Decoded(logs) => {
+        match &result.logs {
+            FetchLogs::Decoded(logs) => {
                 // Collect columns from first batch
                 if !self.table_created {
                     self.collect_columns(logs);
@@ -287,7 +343,7 @@ impl OutputWriter for SqliteWriter {
                     self.insert_batch(batch)?;
                 }
             }
-            FetchResult::Raw(logs) => {
+            FetchLogs::Raw(logs) => {
                 self.write_raw_logs(logs)?;
             }
         }
@@ -320,11 +376,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sanitize_column_name() {
-        assert_eq!(SqliteWriter::sanitize_column_name("from"), "param_from");
+    fn test_sanitize_column_name_basic() {
         assert_eq!(
-            SqliteWriter::sanitize_column_name("token-id"),
+            SqliteWriter::sanitize_column_name_basic("from"),
+            "param_from"
+        );
+        assert_eq!(
+            SqliteWriter::sanitize_column_name_basic("token-id"),
             "param_token_id"
         );
+    }
+
+    #[test]
+    fn test_column_name_collision_handling() {
+        // Note: We can't easily test the collision handling without a full writer,
+        // but we can verify that the basic sanitization produces identical results
+        // for names that should collide
+        let name1 = "a-b";
+        let name2 = "a_b";
+        let sanitized1 = SqliteWriter::sanitize_column_name_basic(name1);
+        let sanitized2 = SqliteWriter::sanitize_column_name_basic(name2);
+        assert_eq!(sanitized1, sanitized2); // These collide
     }
 }

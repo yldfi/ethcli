@@ -38,15 +38,38 @@ pub struct Endpoint {
 
 impl Endpoint {
     /// Create a new endpoint from config
-    pub fn new(config: EndpointConfig, timeout_secs: u64, _proxy: Option<&str>) -> Result<Self> {
+    ///
+    /// Note: The `proxy` parameter is currently not implemented. Proxy support would
+    /// require using a custom reqwest client with the alloy provider.
+    ///
+    /// # Errors
+    /// Returns `RpcError::ProxyNotSupported` if a proxy URL is provided, to prevent
+    /// users from having a false sense of privacy/security when traffic would actually
+    /// go direct.
+    pub fn new(config: EndpointConfig, timeout_secs: u64, proxy: Option<&str>) -> Result<Self> {
         let timeout = Duration::from_secs(timeout_secs);
+
+        // Fail fast if proxy is configured - don't silently ignore it
+        if let Some(proxy_url) = proxy {
+            return Err(RpcError::ProxyNotSupported(format!(
+                "Proxy '{}' was configured but proxy support is not yet implemented. \
+                 Remove the proxy configuration or traffic will fail. \
+                 See: https://github.com/alloy-rs/alloy/issues/... for proxy support status.",
+                crate::error::sanitize_error_message(proxy_url)
+            ))
+            .into());
+        }
 
         // Parse URL
         let url: reqwest::Url = config.url.parse().map_err(|e| {
-            RpcError::ConnectionFailed(format!("Invalid URL {}: {}", config.url, e))
+            RpcError::ConnectionFailed(format!(
+                "Invalid URL {}: {}",
+                crate::error::sanitize_error_message(&config.url),
+                e
+            ))
         })?;
 
-        // Create provider (proxy support would require lower-level transport)
+        // Create provider (proxy support would require lower-level transport with custom reqwest client)
         #[allow(deprecated)]
         let provider = ProviderBuilder::new().on_http(url);
 
@@ -88,7 +111,9 @@ impl Endpoint {
 
         match result {
             Ok(Ok(block)) => Ok(block),
-            Ok(Err(e)) => Err(RpcError::Provider(e.to_string()).into()),
+            Ok(Err(e)) => {
+                Err(RpcError::Provider(crate::error::sanitize_error_message(&e.to_string())).into())
+            }
             Err(_) => Err(RpcError::Timeout(self.timeout.as_millis() as u64).into()),
         }
     }
@@ -119,9 +144,15 @@ impl Endpoint {
                     || err_str.contains("exceed")
                     || err_str.contains("too large")
                 {
+                    // Try to extract the actual requested range from the filter
+                    let requested = filter
+                        .get_from_block()
+                        .and_then(|from| filter.get_to_block().map(|to| to.saturating_sub(from)))
+                        .unwrap_or(0);
+
                     return Err(RpcError::BlockRangeTooLarge {
                         max: self.config.max_block_range,
-                        requested: 0, // Will be filled by caller
+                        requested,
                     }
                     .into());
                 }
@@ -134,7 +165,7 @@ impl Endpoint {
                     return Err(RpcError::ResponseTooLarge(0).into());
                 }
 
-                Err(RpcError::Provider(e.to_string()).into())
+                Err(RpcError::Provider(crate::error::sanitize_error_message(&e.to_string())).into())
             }
             Err(_) => Err(RpcError::Timeout(self.timeout.as_millis() as u64).into()),
         }

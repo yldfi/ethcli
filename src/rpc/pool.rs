@@ -1,7 +1,7 @@
 //! RPC pool for managing multiple endpoints with parallel requests
 
 use crate::config::{Chain, EndpointConfig, RpcConfig};
-use crate::error::{Error, Result, RpcError};
+use crate::error::{sanitize_error_message, Error, Result, RpcError};
 use crate::rpc::{default_endpoints, Endpoint, EndpointHealth, HealthTracker};
 use alloy::rpc::types::{Filter, Log};
 use futures::future::join_all;
@@ -67,7 +67,11 @@ impl RpcPool {
             match Endpoint::new(cfg.clone(), config.timeout_secs, proxy.as_deref()) {
                 Ok(ep) => endpoints.push(ep),
                 Err(e) => {
-                    tracing::warn!("Failed to create endpoint {}: {}", cfg.url, e);
+                    tracing::warn!(
+                        "Failed to create endpoint {}: {}",
+                        sanitize_error_message(&cfg.url),
+                        e
+                    );
                 }
             }
         }
@@ -127,7 +131,11 @@ impl RpcPool {
                 }
                 Err(e) => {
                     self.health.record_failure(endpoint.url(), false, false);
-                    tracing::debug!("Failed to get block number from {}: {}", endpoint.url(), e);
+                    tracing::debug!(
+                        "Failed to get block number from {}: {}",
+                        sanitize_error_message(endpoint.url()),
+                        e
+                    );
                 }
             }
         }
@@ -158,11 +166,25 @@ impl RpcPool {
                         .record_failure(endpoint.url(), is_rate_limit, is_timeout);
 
                     // Learn from block range errors
-                    if let Error::Rpc(RpcError::BlockRangeTooLarge { max, .. }) = &e {
-                        self.health.record_block_range_limit(endpoint.url(), *max);
+                    // When we get a BlockRangeTooLarge error, the 'max' is the configured value
+                    // that was too high. We should record a reduced value to actually back off.
+                    if let Error::Rpc(RpcError::BlockRangeTooLarge { max, requested }) = &e {
+                        // Halve the failed range, with a floor of 100 blocks to allow
+                        // adapting to very restrictive endpoints while remaining practical
+                        let reduced_limit = if *requested > 0 {
+                            (*requested / 2).max(100)
+                        } else {
+                            (*max / 2).max(100)
+                        };
+                        self.health
+                            .record_block_range_limit(endpoint.url(), reduced_limit);
                     }
 
-                    tracing::debug!("Failed to get logs from {}: {}", endpoint.url(), e);
+                    tracing::debug!(
+                        "Failed to get logs from {}: {}",
+                        sanitize_error_message(endpoint.url()),
+                        e
+                    );
                 }
             }
         }
@@ -173,6 +195,14 @@ impl RpcPool {
     /// Fetch logs from multiple filters in parallel
     pub async fn get_logs_parallel(&self, filters: Vec<Filter>) -> Vec<Result<Vec<Log>>> {
         let endpoints = self.select_endpoints(self.concurrency.max(filters.len()));
+
+        // Guard against empty endpoints (would panic on modulo)
+        if endpoints.is_empty() {
+            return filters
+                .into_iter()
+                .map(|_| Err(RpcError::NoHealthyEndpoints.into()))
+                .collect();
+        }
 
         // Create a task for each filter
         let tasks: Vec<_> = filters
@@ -215,6 +245,15 @@ impl RpcPool {
             .filter(|e| self.health.is_available(e.url()))
             .cloned()
             .collect();
+
+        // Warn if all endpoints are unhealthy
+        if available.is_empty() && !self.endpoints.is_empty() {
+            tracing::warn!(
+                "All {} endpoints are currently unhealthy (circuit breaker open). \
+                 Requests will fail until circuit breakers reset.",
+                self.endpoints.len()
+            );
+        }
 
         // Sort by ranking
         available.sort_by(|a, b| {
