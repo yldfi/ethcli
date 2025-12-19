@@ -1,6 +1,6 @@
 [package]
 name = "eth-log-fetcher"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Fast Ethereum historical log fetcher with parallel RPC requests"
 license = "MIT"
