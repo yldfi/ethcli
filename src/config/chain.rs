@@ -8,9 +8,10 @@ use std::fmt;
 pub type ChainId = u64;
 
 /// Supported blockchain networks
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Chain {
+    #[default]
     Ethereum,
     Polygon,
     Arbitrum,
@@ -21,12 +22,6 @@ pub enum Chain {
     /// Custom chain with ID
     #[serde(untagged)]
     Custom(ChainId),
-}
-
-impl Default for Chain {
-    fn default() -> Self {
-        Chain::Ethereum
-    }
 }
 
 impl Chain {

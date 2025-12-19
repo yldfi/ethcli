@@ -220,7 +220,7 @@ fn format_thousands(n: u64) -> String {
         }
     }
 
-    for (i, chunk) in s[first_group..].as_bytes().chunks(3).enumerate() {
+    for (i, chunk) in s.as_bytes()[first_group..].chunks(3).enumerate() {
         if i > 0 {
             result.push(',');
         }
@@ -399,12 +399,7 @@ fn build_rpc_config(cli: &Cli, config_file: &Option<ConfigFile>) -> anyhow::Resu
 
     // Custom endpoints from CLI
     if !cli.rpc.rpc_urls.is_empty() {
-        rpc_config.endpoints = cli
-            .rpc
-            .rpc_urls
-            .iter()
-            .map(|url| EndpointConfig::new(url))
-            .collect();
+        rpc_config.endpoints = cli.rpc.rpc_urls.iter().map(EndpointConfig::new).collect();
     }
 
     // Load from file

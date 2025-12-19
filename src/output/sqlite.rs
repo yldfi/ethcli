@@ -187,7 +187,7 @@ impl SqliteWriter {
                     let value = log
                         .params
                         .get(col_name)
-                        .map(|v| Self::value_to_string(v))
+                        .map(Self::value_to_string)
                         .unwrap_or_default();
                     values.push(Box::new(value));
                 }

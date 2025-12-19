@@ -179,6 +179,8 @@ mod tests {
     #[test]
     fn test_parse_config() {
         let toml = r#"
+etherscan_api_key = "test_key"
+
 [settings]
 concurrency = 10
 timeout_seconds = 60
@@ -190,8 +192,6 @@ priority = 10
 
 [disabled_endpoints]
 urls = ["https://disabled.com/rpc"]
-
-etherscan_api_key = "test_key"
 "#;
 
         let config: ConfigFile = toml::from_str(toml).unwrap();

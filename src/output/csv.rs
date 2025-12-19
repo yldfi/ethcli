@@ -92,7 +92,7 @@ impl CsvWriter {
             let value = log
                 .params
                 .get(col)
-                .map(|v| Self::value_to_string(v))
+                .map(Self::value_to_string)
                 .unwrap_or_default();
             row.push(value);
         }
@@ -157,7 +157,7 @@ impl CsvWriter {
     fn write_raw_log(&mut self, log: &Log) -> Result<()> {
         if !self.header_written {
             self.writer
-                .write_record(&[
+                .write_record([
                     "block_number",
                     "transaction_hash",
                     "log_index",

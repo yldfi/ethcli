@@ -16,20 +16,15 @@ pub struct ProxyRotator {
 }
 
 /// Proxy rotation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RotationMode {
     /// Round-robin through proxies
+    #[default]
     RoundRobin,
     /// Random selection
     Random,
     /// Sticky - use same proxy until failure
     Sticky,
-}
-
-impl Default for RotationMode {
-    fn default() -> Self {
-        RotationMode::RoundRobin
-    }
 }
 
 impl ProxyRotator {

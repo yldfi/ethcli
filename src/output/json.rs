@@ -137,9 +137,10 @@ mod tests {
 
     #[test]
     fn test_json_array_format() {
-        let mut buffer = Vec::new();
-        let mut writer = JsonWriter {
-            writer: Box::new(&mut buffer),
+        use std::io::Cursor;
+        let buffer = Cursor::new(Vec::new());
+        let _writer = JsonWriter {
+            writer: Box::new(buffer),
             ndjson: false,
             first_written: false,
             count: 0,

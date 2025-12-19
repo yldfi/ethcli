@@ -19,23 +19,23 @@ pub struct RpcPool {
     health: Arc<HealthTracker>,
     /// Max concurrent requests
     concurrency: usize,
-    /// Global proxy URL
+    /// Global proxy URL (reserved for future use)
+    #[allow(dead_code)]
     proxy: Option<String>,
-    /// Minimum priority to use
+    /// Minimum priority to use (reserved for future use)
+    #[allow(dead_code)]
     min_priority: u8,
 }
 
 impl RpcPool {
     /// Create a new RPC pool for a chain
     pub fn new(chain: Chain, config: &RpcConfig) -> Result<Self> {
-        let mut endpoint_configs = Vec::new();
-
         // Start with user-provided endpoints or defaults
-        if config.endpoints.is_empty() {
-            endpoint_configs = default_endpoints(chain);
+        let mut endpoint_configs = if config.endpoints.is_empty() {
+            default_endpoints(chain)
         } else {
-            endpoint_configs = config.endpoints.clone();
-        }
+            config.endpoints.clone()
+        };
 
         // Add additional endpoints
         for url in &config.add_endpoints {

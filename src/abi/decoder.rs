@@ -116,7 +116,7 @@ impl LogDecoder {
 
     /// Create a decoder for a single event signature
     pub fn from_signature(signature: &EventSignature) -> Result<Self> {
-        Self::from_signatures(&[signature.clone()])
+        Self::from_signatures(std::slice::from_ref(signature))
     }
 
     /// Convert an ABI Event to EventInfo
