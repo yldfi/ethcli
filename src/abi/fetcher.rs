@@ -174,9 +174,10 @@ impl AbiFetcher {
         abi.events().collect()
     }
 
-    /// Find an event by name in an ABI
+    /// Find an event by name in an ABI (case-insensitive)
     pub fn find_event<'a>(abi: &'a JsonAbi, name: &str) -> Option<&'a alloy::json_abi::Event> {
-        abi.events().find(|e| e.name == name)
+        let name_lower = name.to_lowercase();
+        abi.events().find(|e| e.name.to_lowercase() == name_lower)
     }
 
     /// Get the event selector (topic0) for an event
