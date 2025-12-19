@@ -111,40 +111,77 @@ pub struct LogFetcher {
     decoder: Option<LogDecoder>,
     /// Progress callback
     progress_callback: Option<ProgressCallback>,
-    /// Resolved event signature (for filtering)
-    resolved_event: Option<String>,
+    /// Resolved event signatures/topics for filtering (empty = all events)
+    resolved_events: Vec<String>,
 }
 
 impl LogFetcher {
     /// Create a new log fetcher from config
-    pub async fn new(config: Config) -> Result<Self> {
+    pub async fn new(mut config: Config) -> Result<Self> {
         // Create RPC pool
         let pool = RpcPool::new(config.chain, &config.rpc)?;
 
-        // Resolve event name if it's just a name (no parentheses)
-        let resolved_event = if let Some(event_str) = &config.event {
-            if event_str.contains('(') {
-                // Already a full signature
-                Some(event_str.clone())
-            } else {
-                // Just an event name - resolve from Etherscan ABI
-                tracing::info!("Resolving event name '{}' from contract ABI...", event_str);
-                let fetcher = AbiFetcher::new(config.etherscan_key.clone())?;
-                let resolved = fetcher
-                    .resolve_event_name(config.chain, &config.contract, event_str)
-                    .await?;
-                tracing::info!("Resolved to: {}", resolved);
-                Some(resolved)
+        // Auto-detect from_block if needed
+        if config.auto_from_block && config.block_range.from_block() == 0 {
+            tracing::info!("Looking up contract creation block from Etherscan...");
+            let fetcher = AbiFetcher::new(config.etherscan_key.clone())?;
+            match fetcher
+                .get_contract_creation(config.chain, &config.contract)
+                .await
+            {
+                Ok(creation) => {
+                    tracing::info!(
+                        "Contract created at block {} (tx: {})",
+                        creation.block_number,
+                        creation.tx_hash
+                    );
+                    // Update the block range
+                    config.block_range = crate::config::BlockRange::Range {
+                        from: creation.block_number,
+                        to: config.block_range.to_block(),
+                    };
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to get contract creation block: {}. Starting from block 0.",
+                        e
+                    );
+                }
             }
-        } else {
-            None
-        };
+        }
+
+        // Resolve event filters (names, signatures, or topic hashes)
+        let mut resolved_events = Vec::new();
+        if !config.events.is_empty() {
+            let fetcher = AbiFetcher::new(config.etherscan_key.clone())?;
+
+            for event_str in &config.events {
+                // Check if it's a topic hash (0x + 64 hex chars = 66 chars)
+                if event_str.starts_with("0x") && event_str.len() == 66 {
+                    // It's already a topic hash, use as-is
+                    tracing::debug!("Using topic hash: {}", event_str);
+                    resolved_events.push(event_str.clone());
+                } else if event_str.contains('(') {
+                    // It's a full signature
+                    tracing::debug!("Using event signature: {}", event_str);
+                    resolved_events.push(event_str.clone());
+                } else {
+                    // It's just an event name - resolve from Etherscan ABI
+                    tracing::info!("Resolving event name '{}' from contract ABI...", event_str);
+                    let resolved = fetcher
+                        .resolve_event_name(config.chain, &config.contract, event_str)
+                        .await?;
+                    tracing::info!("Resolved '{}' to: {}", event_str, resolved);
+                    resolved_events.push(resolved);
+                }
+            }
+        }
 
         // Set up decoder if not raw mode
         let decoder = if config.raw {
             None
         } else {
-            Some(Self::setup_decoder(&config, resolved_event.as_deref()).await?)
+            Some(Self::setup_decoder(&config, &resolved_events).await?)
         };
 
         Ok(Self {
@@ -152,16 +189,27 @@ impl LogFetcher {
             pool,
             decoder,
             progress_callback: None,
-            resolved_event,
+            resolved_events,
         })
     }
 
     /// Set up the log decoder
-    async fn setup_decoder(config: &Config, resolved_event: Option<&str>) -> Result<LogDecoder> {
-        // If we have a resolved event signature, use that
-        if let Some(event_str) = resolved_event {
-            let sig = EventSignature::parse(event_str)?;
-            return LogDecoder::from_signature(&sig);
+    async fn setup_decoder(config: &Config, resolved_events: &[String]) -> Result<LogDecoder> {
+        // Filter out topic hashes (they're not signatures we can decode)
+        let signatures: Vec<&str> = resolved_events
+            .iter()
+            .filter(|s| s.contains('(')) // Only signatures, not raw topic hashes
+            .map(|s| s.as_str())
+            .collect();
+
+        // If we have resolved event signatures, use them
+        if !signatures.is_empty() {
+            let mut decoder = LogDecoder::new();
+            for sig_str in signatures {
+                let sig = EventSignature::parse(sig_str)?;
+                decoder.add_signature(&sig)?;
+            }
+            return Ok(decoder);
         }
 
         // If ABI file provided, load it
@@ -218,10 +266,27 @@ impl LogFetcher {
 
         let mut base_filter = Filter::new().address(address);
 
-        // Add event topic if we have a specific event (works in both raw and decoded modes)
-        if let Some(event_str) = &self.resolved_event {
-            let sig = EventSignature::parse(event_str)?;
-            base_filter = base_filter.event_signature(sig.topic);
+        // Add event topics if we have specific events (works in both raw and decoded modes)
+        // Multiple topics create an OR filter (matches any of the specified events)
+        if !self.resolved_events.is_empty() {
+            let topics: Vec<alloy::primitives::B256> = self
+                .resolved_events
+                .iter()
+                .map(|event_str| {
+                    // Check if it's already a topic hash
+                    if event_str.starts_with("0x") && event_str.len() == 66 {
+                        event_str.parse().expect("Invalid topic hash format")
+                    } else {
+                        // Parse as signature and compute topic
+                        EventSignature::parse(event_str)
+                            .map(|sig| sig.topic)
+                            .expect("Invalid event signature")
+                    }
+                })
+                .collect();
+
+            // Filter with multiple topics creates OR condition
+            base_filter = base_filter.event_signature(topics);
         }
 
         // Fetch chunks in parallel
@@ -476,11 +541,17 @@ impl StreamingFetcher {
     /// Enable checkpointing
     pub fn with_checkpoint(mut self, path: &Path) -> Result<Self> {
         let config = &self.fetcher.config;
+        // For checkpoint, join multiple events with comma
+        let event_filter = if config.events.is_empty() {
+            None
+        } else {
+            Some(config.events.join(","))
+        };
         let manager = CheckpointManager::load_or_create(
             path,
             &config.contract,
             config.chain.chain_id(),
-            config.event.as_deref(),
+            event_filter.as_deref(),
             config.block_range.from_block(),
             match config.block_range.to_block() {
                 BlockNumber::Number(n) => Some(n),
@@ -564,10 +635,28 @@ impl StreamingFetcher {
 
         let mut base_filter = Filter::new().address(address);
 
-        // Add event topic if specified (use resolved event for proper filtering)
-        if let Some(event_str) = &self.fetcher.resolved_event {
-            let sig = EventSignature::parse(event_str)?;
-            base_filter = base_filter.event_signature(sig.topic);
+        // Add event topics if we have specific events (use resolved events for filtering)
+        // Multiple topics create an OR filter (matches any of the specified events)
+        if !self.fetcher.resolved_events.is_empty() {
+            let topics: Vec<alloy::primitives::B256> = self
+                .fetcher
+                .resolved_events
+                .iter()
+                .map(|event_str| {
+                    // Check if it's already a topic hash
+                    if event_str.starts_with("0x") && event_str.len() == 66 {
+                        event_str.parse().expect("Invalid topic hash format")
+                    } else {
+                        // Parse as signature and compute topic
+                        EventSignature::parse(event_str)
+                            .map(|sig| sig.topic)
+                            .expect("Invalid event signature")
+                    }
+                })
+                .collect();
+
+            // Filter with multiple topics creates OR condition
+            base_filter = base_filter.event_signature(topics);
         }
 
         let concurrency = self.fetcher.config.rpc.concurrency;

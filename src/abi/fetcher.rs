@@ -43,6 +43,17 @@ struct EtherscanResponse {
     result: serde_json::Value,
 }
 
+/// Contract creation info from Etherscan
+#[derive(Debug, Clone)]
+pub struct ContractCreation {
+    /// Block number where contract was created
+    pub block_number: u64,
+    /// Transaction hash of contract creation
+    pub tx_hash: String,
+    /// Contract creator address
+    pub creator: String,
+}
+
 /// ABI fetcher from Etherscan and local files
 pub struct AbiFetcher {
     /// HTTP client
@@ -198,6 +209,134 @@ impl AbiFetcher {
         })?;
 
         Ok(Self::event_signature_string(event))
+    }
+
+    /// Get contract creation info from Etherscan API v2
+    pub async fn get_contract_creation(
+        &self,
+        chain: Chain,
+        contract: &str,
+    ) -> Result<ContractCreation> {
+        let chain_id = chain.chain_id();
+        let encoded_address: Cow<str> = urlencoding_encode(contract);
+
+        let base_url = format!(
+            "https://api.etherscan.io/v2/api?chainid={}&module=contract&action=getcontractcreation&contractaddresses={}",
+            chain_id, encoded_address
+        );
+
+        let url = if let Some(key) = &self.api_key {
+            let encoded_key: Cow<str> = urlencoding_encode(key);
+            format!("{}&apikey={}", base_url, encoded_key)
+        } else {
+            base_url
+        };
+
+        tracing::debug!(
+            "Fetching contract creation for {} on chain {}",
+            contract,
+            chain_id
+        );
+
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            AbiError::EtherscanFetch(format!(
+                "Request failed: {}",
+                crate::error::sanitize_error_message(&e.to_string())
+            ))
+        })?;
+
+        if !response.status().is_success() {
+            return Err(
+                AbiError::EtherscanFetch(format!("HTTP error: {}", response.status())).into(),
+            );
+        }
+
+        let etherscan_response: EtherscanResponse = response.json().await.map_err(|e| {
+            AbiError::EtherscanFetch(format!(
+                "Failed to parse response: {}",
+                crate::error::sanitize_error_message(&e.to_string())
+            ))
+        })?;
+
+        if etherscan_response.status != "1" {
+            return Err(AbiError::EtherscanFetch(format!(
+                "Failed to get contract creation: {}",
+                etherscan_response.message
+            ))
+            .into());
+        }
+
+        // Parse the result array
+        let results = etherscan_response
+            .result
+            .as_array()
+            .ok_or_else(|| AbiError::ParseError("Expected array result".to_string()))?;
+
+        let first = results
+            .first()
+            .ok_or_else(|| AbiError::ParseError("Empty result array".to_string()))?;
+
+        // Extract fields - txHash contains the creation tx
+        let tx_hash = first["txHash"]
+            .as_str()
+            .ok_or_else(|| AbiError::ParseError("Missing txHash".to_string()))?
+            .to_string();
+
+        let creator = first["contractCreator"]
+            .as_str()
+            .ok_or_else(|| AbiError::ParseError("Missing contractCreator".to_string()))?
+            .to_string();
+
+        // We need to fetch the transaction to get the block number
+        // Use eth_getTransactionByHash via a simple RPC call
+        let block_number = self.get_tx_block_number(chain, &tx_hash).await.unwrap_or(0);
+
+        Ok(ContractCreation {
+            block_number,
+            tx_hash,
+            creator,
+        })
+    }
+
+    /// Get transaction block number from Etherscan
+    async fn get_tx_block_number(&self, chain: Chain, tx_hash: &str) -> Result<u64> {
+        let chain_id = chain.chain_id();
+        let encoded_hash: Cow<str> = urlencoding_encode(tx_hash);
+
+        let base_url = format!(
+            "https://api.etherscan.io/v2/api?chainid={}&module=proxy&action=eth_getTransactionByHash&txhash={}",
+            chain_id, encoded_hash
+        );
+
+        let url = if let Some(key) = &self.api_key {
+            let encoded_key: Cow<str> = urlencoding_encode(key);
+            format!("{}&apikey={}", base_url, encoded_key)
+        } else {
+            base_url
+        };
+
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            AbiError::EtherscanFetch(format!(
+                "Request failed: {}",
+                crate::error::sanitize_error_message(&e.to_string())
+            ))
+        })?;
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AbiError::EtherscanFetch(format!("Failed to parse response: {}", e)))?;
+
+        // Extract block number from result.blockNumber (hex string)
+        let block_hex = json["result"]["blockNumber"]
+            .as_str()
+            .ok_or_else(|| AbiError::ParseError("Missing blockNumber".to_string()))?;
+
+        // Parse hex block number (0x...)
+        let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)
+            .map_err(|_| AbiError::ParseError(format!("Invalid block number: {}", block_hex)))?;
+
+        Ok(block_number)
     }
 }
 

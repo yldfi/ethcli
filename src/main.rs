@@ -50,17 +50,20 @@ struct Cli {
     #[arg(short, long)]
     contract: Option<String>,
 
-    /// Event signature (e.g. "Transfer(address,address,uint256)")
-    #[arg(short, long)]
-    event: Option<String>,
+    /// Event signature or name (can be repeated for multiple events)
+    /// Examples: -e Transfer -e Approval
+    ///           -e "Transfer(address,address,uint256)"
+    /// Omit for all events from contract ABI
+    #[arg(short, long, action = clap::ArgAction::Append)]
+    event: Vec<String>,
 
     /// Path to ABI JSON file
     #[arg(long)]
     abi: Option<PathBuf>,
 
-    /// Start block number
-    #[arg(short = 'f', long, default_value = "0")]
-    from_block: u64,
+    /// Start block number (omit or use "auto" to start from contract creation)
+    #[arg(short = 'f', long)]
+    from_block: Option<String>,
 
     /// End block number (or "latest")
     #[arg(short = 't', long, default_value = "latest")]
@@ -306,11 +309,18 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     // Build RPC config
     let rpc_config = build_rpc_config(cli, &config_file)?;
 
+    // Parse from_block (can be number, "auto", or omitted for auto-detect)
+    let (from_block, auto_from_block) = match &cli.from_block {
+        Some(s) if s.to_lowercase() == "auto" => (0, true),
+        Some(s) => (s.parse::<u64>()?, false),
+        None => (0, true), // Default to auto-detect from contract creation
+    };
+
     // Build main config
     let mut builder = Config::builder()
         .chain(chain)
         .contract(contract)
-        .from_block(cli.from_block)
+        .from_block(from_block)
         .to_block(to_block)
         .output_format(format)
         .concurrency(concurrency)
@@ -318,9 +328,11 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
         .resume(cli.resume)
         .quiet(cli.quiet)
         .verbosity(cli.verbose)
+        .auto_from_block(auto_from_block)
         .rpc_config(rpc_config);
 
-    if let Some(event) = &cli.event {
+    // Add event filters (supports multiple: -e Transfer -e Approval)
+    for event in &cli.event {
         builder = builder.event(event);
     }
 
