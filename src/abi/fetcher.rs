@@ -172,6 +172,33 @@ impl AbiFetcher {
     pub fn event_selector(event: &alloy::json_abi::Event) -> alloy::primitives::B256 {
         event.selector()
     }
+
+    /// Get the full event signature string from an ABI event
+    /// e.g., "Transfer(address,address,uint256)"
+    pub fn event_signature_string(event: &alloy::json_abi::Event) -> String {
+        let param_types: Vec<String> = event.inputs.iter().map(|p| p.ty.to_string()).collect();
+        format!("{}({})", event.name, param_types.join(","))
+    }
+
+    /// Resolve an event name to its full signature using the contract ABI
+    /// Returns the full signature string like "TokenExchange(address,uint256,uint256,uint256,uint256)"
+    pub async fn resolve_event_name(
+        &self,
+        chain: Chain,
+        contract: &str,
+        event_name: &str,
+    ) -> Result<String> {
+        let abi = self.fetch_from_etherscan(chain, contract).await?;
+
+        let event = Self::find_event(&abi, event_name).ok_or_else(|| {
+            crate::error::AbiError::EventNotFound(format!(
+                "Event '{}' not found in contract ABI",
+                event_name
+            ))
+        })?;
+
+        Ok(Self::event_signature_string(event))
+    }
 }
 
 impl AbiFetcher {
