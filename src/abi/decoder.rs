@@ -89,7 +89,20 @@ struct EventInfo {
     data_names: Vec<String>,
 }
 
+impl Default for LogDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogDecoder {
+    /// Create an empty decoder
+    pub fn new() -> Self {
+        Self {
+            events: HashMap::new(),
+        }
+    }
+
     /// Create a new decoder from an ABI
     pub fn from_abi(abi: &JsonAbi) -> Result<Self> {
         let mut events = HashMap::new();
@@ -117,6 +130,13 @@ impl LogDecoder {
     /// Create a decoder for a single event signature
     pub fn from_signature(signature: &EventSignature) -> Result<Self> {
         Self::from_signatures(std::slice::from_ref(signature))
+    }
+
+    /// Add an event signature to the decoder
+    pub fn add_signature(&mut self, signature: &EventSignature) -> Result<()> {
+        let info = Self::signature_to_info(signature)?;
+        self.events.insert(signature.topic, info);
+        Ok(())
     }
 
     /// Convert an ABI Event to EventInfo

@@ -18,8 +18,8 @@ pub struct Config {
     pub chain: Chain,
     /// Contract address
     pub contract: String,
-    /// Event signature (optional, fetches all if None)
-    pub event: Option<String>,
+    /// Event filters (names, signatures, or topic hashes). Empty = all events
+    pub events: Vec<String>,
     /// ABI file path (optional)
     pub abi_path: Option<PathBuf>,
     /// Block range to fetch
@@ -40,6 +40,8 @@ pub struct Config {
     pub quiet: bool,
     /// Fetch raw logs without decoding
     pub raw: bool,
+    /// Auto-detect from_block from contract creation
+    pub auto_from_block: bool,
 }
 
 /// Block range specification
@@ -162,7 +164,7 @@ pub struct ProxyConfig {
 pub struct ConfigBuilder {
     chain: Option<Chain>,
     contract: Option<String>,
-    event: Option<String>,
+    events: Vec<String>,
     abi_path: Option<PathBuf>,
     from_block: Option<u64>,
     to_block: Option<BlockNumber>,
@@ -175,6 +177,7 @@ pub struct ConfigBuilder {
     verbosity: u8,
     quiet: bool,
     raw: bool,
+    auto_from_block: bool,
 }
 
 impl ConfigBuilder {
@@ -193,7 +196,12 @@ impl ConfigBuilder {
     }
 
     pub fn event(mut self, signature: impl Into<String>) -> Self {
-        self.event = Some(signature.into());
+        self.events.push(signature.into());
+        self
+    }
+
+    pub fn events(mut self, signatures: Vec<String>) -> Self {
+        self.events = signatures;
         self
     }
 
@@ -272,6 +280,11 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn auto_from_block(mut self, auto: bool) -> Self {
+        self.auto_from_block = auto;
+        self
+    }
+
     pub fn rpc_config(mut self, rpc: RpcConfig) -> Self {
         self.rpc = rpc;
         self
@@ -311,7 +324,7 @@ impl ConfigBuilder {
         Ok(Config {
             chain: self.chain.unwrap_or_default(),
             contract,
-            event: self.event,
+            events: self.events,
             abi_path: self.abi_path,
             block_range,
             output: OutputConfig {
@@ -327,6 +340,7 @@ impl ConfigBuilder {
             verbosity: self.verbosity,
             quiet: self.quiet,
             raw: self.raw,
+            auto_from_block: self.auto_from_block,
         })
     }
 }
