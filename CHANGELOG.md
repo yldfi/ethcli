@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/michaeldim/ethcli/compare/v0.5.0...v0.5.1) (2025-12-23)
+
+
+### Bug Fixes
+
+* release workflow packages ethcli binary instead of eth-log-fetch ([e70c62a](https://github.com/michaeldim/ethcli/commit/e70c62afd6524d04819862f37b2ed872665b5c02))
+
 ## [0.5.0](https://github.com/michaeldim/ethcli/compare/v0.4.0...v0.5.0) (2025-12-23)
 
 
