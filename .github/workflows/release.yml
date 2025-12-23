@@ -62,23 +62,23 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czvf ../../../eth-log-fetch-${{ matrix.name }}.tar.gz eth-log-fetch
+          tar czvf ../../../ethcli-${{ matrix.name }}.tar.gz ethcli
           cd ../../..
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../eth-log-fetch-${{ matrix.name }}.zip eth-log-fetch.exe
+          7z a ../../../ethcli-${{ matrix.name }}.zip ethcli.exe
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: eth-log-fetch-${{ matrix.name }}
+          name: ethcli-${{ matrix.name }}
           path: |
-            eth-log-fetch-*.tar.gz
-            eth-log-fetch-*.zip
+            ethcli-*.tar.gz
+            ethcli-*.zip
 
   release:
     name: Create Release
@@ -115,9 +115,9 @@ jobs:
           files: |
             artifacts/*
           body: |
-            ## eth-log-fetch ${{ steps.tag.outputs.tag }}
+            ## ethcli ${{ steps.tag.outputs.tag }}
 
-            Fast Ethereum historical log fetcher with parallel RPC requests.
+            Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts.
 
             ### Installation
 
@@ -125,25 +125,31 @@ jobs:
 
             **Linux (x86_64)**
             ```bash
-            tar xzf eth-log-fetch-linux-x86_64.tar.gz
-            chmod +x eth-log-fetch
-            sudo mv eth-log-fetch /usr/local/bin/
+            tar xzf ethcli-linux-x86_64.tar.gz
+            chmod +x ethcli
+            sudo mv ethcli /usr/local/bin/
             ```
 
             **macOS (Apple Silicon)**
             ```bash
-            tar xzf eth-log-fetch-macos-aarch64.tar.gz
-            chmod +x eth-log-fetch
-            sudo mv eth-log-fetch /usr/local/bin/
+            tar xzf ethcli-macos-aarch64.tar.gz
+            chmod +x ethcli
+            sudo mv ethcli /usr/local/bin/
             ```
 
             **Windows**
-            Extract `eth-log-fetch-windows-x86_64.zip` and add to your PATH.
+            Extract `ethcli-windows-x86_64.zip` and add to your PATH.
 
             ### Quick Start
             ```bash
             # Fetch Transfer events from USDC
-            eth-log-fetch -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+            ethcli logs -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
               -e "Transfer(address,address,uint256)" \
               -f 18000000 -t 18100000 -o transfers.json
+
+            # Get gas prices
+            ethcli gas oracle
+
+            # Get account balance
+            ethcli account balance 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
             ```
