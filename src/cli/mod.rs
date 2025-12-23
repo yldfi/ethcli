@@ -3,11 +3,14 @@
 //! Each subcommand has its own module with argument definitions and handlers.
 
 pub mod account;
+pub mod cast;
 pub mod config;
 pub mod contract;
 pub mod endpoints;
+pub mod ens;
 pub mod gas;
 pub mod logs;
+pub mod rpc;
 pub mod sig;
 pub mod token;
 pub mod tx;
@@ -35,11 +38,16 @@ use clap::{Parser, Subcommand};
     # Get contract ABI
     ethcli contract abi 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
 
-    # Lookup function selector
-    ethcli sig fn 0xa9059cbb
+    # Cast utilities
+    ethcli cast to-wei 1.5 eth
+    ethcli cast sig "transfer(address,uint256)"
 
-    # Get gas prices
-    ethcli gas oracle
+    # RPC calls
+    ethcli rpc block latest
+    ethcli rpc call 0x... 0xa9059cbb...
+
+    # ENS resolution
+    ethcli ens resolve vitalik.eth
 
 ENVIRONMENT VARIABLES:
     ETHERSCAN_API_KEY    Etherscan API key (optional, increases rate limit)
@@ -113,5 +121,31 @@ pub enum Commands {
     Config {
         #[command(subcommand)]
         action: config::ConfigCommands,
+    },
+
+    /// Type conversions, hashing, and encoding utilities
+    Cast {
+        #[command(subcommand)]
+        action: cast::CastCommands,
+    },
+
+    /// Direct RPC calls (call, block, storage, code)
+    Rpc {
+        #[command(subcommand)]
+        action: rpc::RpcCommands,
+
+        /// Custom RPC URL (overrides default)
+        #[arg(long, global = true)]
+        rpc_url: Option<String>,
+    },
+
+    /// ENS name resolution
+    Ens {
+        #[command(subcommand)]
+        action: ens::EnsCommands,
+
+        /// Custom RPC URL (overrides default)
+        #[arg(long, global = true)]
+        rpc_url: Option<String>,
     },
 }

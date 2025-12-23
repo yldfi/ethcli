@@ -19,7 +19,13 @@
       "Bash(git commit:*)",
       "Bash(gh release list:*)",
       "Bash(git fetch:*)",
-      "Bash(gh workflow run:*)"
+      "Bash(gh workflow run:*)",
+      "Bash(gh repo rename:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(codex exec:*)",
+      "Bash(gemini:*)",
+      "Bash(grep:*)"
     ]
   }
 }

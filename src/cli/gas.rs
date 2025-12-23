@@ -52,18 +52,25 @@ pub async fn handle(
                 });
                 println!("{}", serde_json::to_string_pretty(&json)?);
             } else {
+                // Gas oracle values are in Wei, convert to Gwei for display
+                let gwei = U256::from(1_000_000_000u64);
+                let safe_gwei = oracle.safe_gas_price / gwei;
+                let standard_gwei = oracle.propose_gas_price / gwei;
+                let fast_gwei = oracle.fast_gas_price / gwei;
+                let base_fee_gwei = oracle.suggested_base_fee / gwei;
+
+                // Also get fractional part for more precision
+                let safe_frac = (oracle.safe_gas_price % gwei) * U256::from(1000) / gwei;
+                let standard_frac = (oracle.propose_gas_price % gwei) * U256::from(1000) / gwei;
+                let fast_frac = (oracle.fast_gas_price % gwei) * U256::from(1000) / gwei;
+                let base_fee_frac = (oracle.suggested_base_fee % gwei) * U256::from(1000) / gwei;
+
                 println!("Gas Prices ({})", chain.display_name());
                 println!("{}", "─".repeat(40));
-                println!("Safe:      {:>6} gwei", oracle.safe_gas_price.to_string());
-                println!(
-                    "Standard:  {:>6} gwei",
-                    oracle.propose_gas_price.to_string()
-                );
-                println!("Fast:      {:>6} gwei", oracle.fast_gas_price.to_string());
-                println!(
-                    "Base Fee:  {:>6} gwei",
-                    oracle.suggested_base_fee.to_string()
-                );
+                println!("Safe:      {}.{:03} gwei", safe_gwei, safe_frac);
+                println!("Standard:  {}.{:03} gwei", standard_gwei, standard_frac);
+                println!("Fast:      {}.{:03} gwei", fast_gwei, fast_frac);
+                println!("Base Fee:  {}.{:03} gwei", base_fee_gwei, base_fee_frac);
             }
         }
 
