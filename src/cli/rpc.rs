@@ -360,3 +360,135 @@ fn decode_output(data: &[u8], type_sig: &str) -> anyhow::Result<String> {
 
     Ok(format!("{:?}", decoded))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::eips::{BlockId, BlockNumberOrTag};
+
+    // ==================== parse_block_id tests ====================
+
+    #[test]
+    fn test_parse_block_latest() {
+        let result = parse_block_id("latest").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Latest));
+    }
+
+    #[test]
+    fn test_parse_block_latest_uppercase() {
+        let result = parse_block_id("LATEST").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Latest));
+    }
+
+    #[test]
+    fn test_parse_block_pending() {
+        let result = parse_block_id("pending").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Pending));
+    }
+
+    #[test]
+    fn test_parse_block_earliest() {
+        let result = parse_block_id("earliest").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Earliest));
+    }
+
+    #[test]
+    fn test_parse_block_finalized() {
+        let result = parse_block_id("finalized").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Finalized));
+    }
+
+    #[test]
+    fn test_parse_block_safe() {
+        let result = parse_block_id("safe").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Safe));
+    }
+
+    #[test]
+    fn test_parse_block_number() {
+        let result = parse_block_id("12345").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Number(12345)));
+    }
+
+    #[test]
+    fn test_parse_block_number_zero() {
+        let result = parse_block_id("0").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Number(0)));
+    }
+
+    #[test]
+    fn test_parse_block_number_large() {
+        let result = parse_block_id("21000000").unwrap();
+        assert_eq!(result, BlockId::Number(BlockNumberOrTag::Number(21000000)));
+    }
+
+    #[test]
+    fn test_parse_block_hash() {
+        let hash_str = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let result = parse_block_id(hash_str).unwrap();
+        let expected_hash = B256::from_str(hash_str).unwrap();
+        assert_eq!(result, BlockId::Hash(expected_hash.into()));
+    }
+
+    #[test]
+    fn test_parse_block_invalid_number() {
+        let result = parse_block_id("not_a_number");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_block_invalid_hash_length() {
+        // Hash that's too short (not 66 chars)
+        let result = parse_block_id("0x1234");
+        // This should try to parse as a number and fail
+        assert!(result.is_err());
+    }
+
+    // ==================== decode_output tests ====================
+
+    #[test]
+    fn test_decode_output_uint256() {
+        // 1000 encoded as uint256
+        let data = hex::decode("00000000000000000000000000000000000000000000000000000000000003e8")
+            .unwrap();
+        let result = decode_output(&data, "uint256").unwrap();
+        assert!(result.contains("1000"));
+    }
+
+    #[test]
+    fn test_decode_output_bool_true() {
+        // true encoded as bool
+        let data = hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+        let result = decode_output(&data, "bool").unwrap();
+        assert!(result.contains("true"));
+    }
+
+    #[test]
+    fn test_decode_output_bool_false() {
+        // false encoded as bool
+        let data = hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+            .unwrap();
+        let result = decode_output(&data, "bool").unwrap();
+        assert!(result.contains("false"));
+    }
+
+    #[test]
+    fn test_decode_output_address() {
+        // Address encoded
+        let data = hex::decode("000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")
+            .unwrap();
+        let result = decode_output(&data, "address").unwrap();
+        // Should contain the address (case-insensitive check)
+        assert!(result
+            .to_lowercase()
+            .contains("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"));
+    }
+
+    #[test]
+    fn test_decode_output_invalid_type() {
+        let data = vec![0u8; 32];
+        let result = decode_output(&data, "invalid_type");
+        assert!(result.is_err());
+    }
+}

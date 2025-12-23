@@ -243,3 +243,88 @@ async fn reverse_lookup<P: Provider>(provider: &P, address: Address) -> anyhow::
 
     Ok(name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ENS namehash test vectors from ENS documentation
+    // https://docs.ens.domains/resolution/names#namehash
+
+    #[test]
+    fn test_namehash_empty() {
+        let hash = namehash("");
+        assert_eq!(hash, B256::ZERO);
+    }
+
+    #[test]
+    fn test_namehash_eth() {
+        let hash = namehash("eth");
+        assert_eq!(
+            format!("{:#x}", hash),
+            "0x93cdeb708b7545dc668eb9280176169d1c33cfd8ed6f04690a0bcc88a93fc4ae"
+        );
+    }
+
+    #[test]
+    fn test_namehash_foo_eth() {
+        let hash = namehash("foo.eth");
+        assert_eq!(
+            format!("{:#x}", hash),
+            "0xde9b09fd7c5f901e23a3f19fecc54828e9c848539801e86591bd9801b019f84f"
+        );
+    }
+
+    #[test]
+    fn test_namehash_vitalik_eth() {
+        // Known namehash for vitalik.eth
+        let hash = namehash("vitalik.eth");
+        assert_eq!(
+            format!("{:#x}", hash),
+            "0xee6c4522aab0003e8d14cd40a6af439055fd2577951148c14b6cea9a53475835"
+        );
+    }
+
+    #[test]
+    fn test_namehash_subdomain() {
+        // test.foo.eth
+        let hash = namehash("test.foo.eth");
+        // The namehash should be deterministic
+        let hash2 = namehash("test.foo.eth");
+        assert_eq!(hash, hash2);
+        // And different from parent
+        let parent_hash = namehash("foo.eth");
+        assert_ne!(hash, parent_hash);
+    }
+
+    #[test]
+    fn test_namehash_case_sensitive() {
+        // ENS namehash is case-sensitive (though normalization happens before)
+        let hash1 = namehash("FOO.eth");
+        let hash2 = namehash("foo.eth");
+        // These should be different because namehash doesn't normalize
+        assert_ne!(hash1, hash2);
+    }
+
+    // Test selector constants
+    #[test]
+    fn test_addr_selector() {
+        // addr(bytes32) selector
+        let expected = keccak256("addr(bytes32)".as_bytes());
+        assert_eq!(ADDR_SELECTOR, expected[..4]);
+    }
+
+    #[test]
+    fn test_name_selector() {
+        // name(bytes32) selector
+        let expected = keccak256("name(bytes32)".as_bytes());
+        assert_eq!(NAME_SELECTOR, expected[..4]);
+    }
+
+    #[test]
+    fn test_resolver_selector() {
+        // resolver(bytes32) selector
+        let expected = keccak256("resolver(bytes32)".as_bytes());
+        assert_eq!(RESOLVER_SELECTOR, expected[..4]);
+    }
+}
