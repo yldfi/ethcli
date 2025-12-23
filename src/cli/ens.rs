@@ -1,0 +1,245 @@
+//! ENS (Ethereum Name Service) resolution
+//!
+//! Resolve ENS names to addresses and vice versa
+
+use crate::config::{Chain, EndpointConfig};
+use crate::rpc::Endpoint;
+use alloy::primitives::{keccak256, Address, B256};
+use alloy::providers::Provider;
+use clap::Subcommand;
+use std::str::FromStr;
+
+// ENS Registry address (same on mainnet and testnets)
+const ENS_REGISTRY: &str = "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e";
+
+// Resolver interface selectors
+const ADDR_SELECTOR: [u8; 4] = [0x3b, 0x3b, 0x57, 0xde]; // addr(bytes32)
+const NAME_SELECTOR: [u8; 4] = [0x69, 0x1f, 0x34, 0x31]; // name(bytes32)
+const RESOLVER_SELECTOR: [u8; 4] = [0x01, 0x78, 0xb8, 0xbf]; // resolver(bytes32)
+
+#[derive(Subcommand)]
+pub enum EnsCommands {
+    /// Resolve ENS name to address
+    Resolve {
+        /// ENS name (e.g., "vitalik.eth")
+        name: String,
+    },
+
+    /// Reverse lookup - address to ENS name
+    Lookup {
+        /// Ethereum address
+        address: String,
+    },
+
+    /// Get the resolver for an ENS name
+    Resolver {
+        /// ENS name
+        name: String,
+    },
+
+    /// Compute namehash for an ENS name
+    Namehash {
+        /// ENS name
+        name: String,
+    },
+}
+
+pub async fn handle(
+    action: &EnsCommands,
+    chain: Chain,
+    rpc_url: Option<String>,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    // ENS only works on Ethereum mainnet (and some testnets)
+    if chain != Chain::Ethereum {
+        return Err(anyhow::anyhow!("ENS is only available on Ethereum mainnet"));
+    }
+
+    // Get RPC endpoint
+    let endpoint = if let Some(url) = rpc_url {
+        Endpoint::new(EndpointConfig::new(url), 30, None)?
+    } else {
+        let defaults = crate::rpc::default_endpoints(chain);
+        if defaults.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No default RPC endpoints for {}",
+                chain.display_name()
+            ));
+        }
+        Endpoint::new(defaults[0].clone(), 30, None)?
+    };
+
+    let provider = endpoint.provider();
+
+    match action {
+        EnsCommands::Resolve { name } => {
+            if !quiet {
+                eprintln!("Resolving {}...", name);
+            }
+
+            let address = resolve_name(&provider, name).await?;
+            println!("{}", address.to_checksum(None));
+        }
+
+        EnsCommands::Lookup { address } => {
+            let addr = Address::from_str(address)
+                .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
+
+            if !quiet {
+                eprintln!("Looking up {}...", address);
+            }
+
+            match reverse_lookup(&provider, addr).await {
+                Ok(name) => println!("{}", name),
+                Err(_) => println!("No ENS name found for this address"),
+            }
+        }
+
+        EnsCommands::Resolver { name } => {
+            if !quiet {
+                eprintln!("Getting resolver for {}...", name);
+            }
+
+            let resolver = get_resolver(&provider, name).await?;
+            println!("{}", resolver.to_checksum(None));
+        }
+
+        EnsCommands::Namehash { name } => {
+            let hash = namehash(name);
+            println!("{:#x}", hash);
+        }
+    }
+
+    Ok(())
+}
+
+/// Compute the namehash of an ENS name
+fn namehash(name: &str) -> B256 {
+    let mut node = B256::ZERO;
+
+    if name.is_empty() {
+        return node;
+    }
+
+    // Split name into labels and process in reverse
+    let labels: Vec<&str> = name.split('.').collect();
+
+    for label in labels.into_iter().rev() {
+        let label_hash = keccak256(label.as_bytes());
+        let mut combined = [0u8; 64];
+        combined[..32].copy_from_slice(node.as_slice());
+        combined[32..].copy_from_slice(label_hash.as_slice());
+        node = keccak256(combined);
+    }
+
+    node
+}
+
+/// Get the resolver contract for an ENS name
+async fn get_resolver<P: Provider>(provider: &P, name: &str) -> anyhow::Result<Address> {
+    let registry = Address::from_str(ENS_REGISTRY)?;
+    let node = namehash(name);
+
+    // Call resolver(bytes32)
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&RESOLVER_SELECTOR);
+    calldata.extend_from_slice(node.as_slice());
+
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(registry)
+        .input(calldata.into());
+
+    let result = provider
+        .call(tx.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get resolver: {}", e))?;
+
+    if result.len() < 32 {
+        return Err(anyhow::anyhow!("Invalid resolver response"));
+    }
+
+    // Decode address from last 20 bytes of the 32-byte response
+    let addr = Address::from_slice(&result[12..32]);
+
+    if addr.is_zero() {
+        return Err(anyhow::anyhow!("No resolver set for {}", name));
+    }
+
+    Ok(addr)
+}
+
+/// Resolve an ENS name to an address
+async fn resolve_name<P: Provider>(provider: &P, name: &str) -> anyhow::Result<Address> {
+    let resolver = get_resolver(provider, name).await?;
+    let node = namehash(name);
+
+    // Call addr(bytes32)
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&ADDR_SELECTOR);
+    calldata.extend_from_slice(node.as_slice());
+
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(resolver)
+        .input(calldata.into());
+
+    let result = provider
+        .call(tx.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to resolve name: {}", e))?;
+
+    if result.len() < 32 {
+        return Err(anyhow::anyhow!("Invalid address response"));
+    }
+
+    let addr = Address::from_slice(&result[12..32]);
+
+    if addr.is_zero() {
+        return Err(anyhow::anyhow!("Name {} not found", name));
+    }
+
+    Ok(addr)
+}
+
+/// Reverse lookup - find ENS name for an address
+async fn reverse_lookup<P: Provider>(provider: &P, address: Address) -> anyhow::Result<String> {
+    // Construct the reverse name: <address>.addr.reverse
+    let addr_hex = format!("{:x}", address).to_lowercase();
+    let reverse_name = format!("{}.addr.reverse", addr_hex);
+
+    let resolver = get_resolver(provider, &reverse_name)
+        .await
+        .map_err(|e| anyhow::anyhow!("No reverse record set ({})", e))?;
+
+    let node = namehash(&reverse_name);
+
+    // Call name(bytes32)
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&NAME_SELECTOR);
+    calldata.extend_from_slice(node.as_slice());
+
+    let tx = alloy::rpc::types::TransactionRequest::default()
+        .to(resolver)
+        .input(calldata.into());
+
+    let result = provider
+        .call(tx.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to lookup name: {}", e))?;
+
+    // Decode string from ABI-encoded response
+    // Format: offset (32 bytes) + length (32 bytes) + string data
+    if result.len() < 64 {
+        return Err(anyhow::anyhow!("Invalid name response"));
+    }
+
+    let length = u64::from_be_bytes(result[56..64].try_into()?);
+    if length == 0 {
+        return Err(anyhow::anyhow!("No name set for address"));
+    }
+
+    let name_bytes = &result[64..64 + length as usize];
+    let name = String::from_utf8(name_bytes.to_vec())
+        .map_err(|e| anyhow::anyhow!("Invalid name encoding: {}", e))?;
+
+    Ok(name)
+}

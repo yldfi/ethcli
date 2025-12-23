@@ -105,6 +105,11 @@ impl Endpoint {
         self.config.enabled
     }
 
+    /// Get the inner provider for direct RPC calls
+    pub fn provider(&self) -> &HttpProvider {
+        &self.provider
+    }
+
     /// Get the current block number
     pub async fn get_block_number(&self) -> Result<u64> {
         let result = tokio::time::timeout(self.timeout, self.provider.get_block_number()).await;
