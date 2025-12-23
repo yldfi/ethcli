@@ -2,9 +2,9 @@
 //!
 //! Uses the unified Etherscan API v2 endpoint which works for all supported chains.
 
-use crate::cache::SignatureCache;
 use crate::config::Chain;
 use crate::error::{AbiError, Result};
+use crate::etherscan::SignatureCache;
 use alloy::json_abi::JsonAbi;
 use serde::Deserialize;
 use std::borrow::Cow;

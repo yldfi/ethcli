@@ -1,6 +1,6 @@
-# eth-log-fetcher
+# ethcli
 
-Fast Ethereum historical log fetcher with parallel RPC requests.
+Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts.
 
 ## Build Commands
 
@@ -26,8 +26,23 @@ cargo clippy
 
 ## Binary Location
 
-- Debug: `./target/debug/eth-log-fetch`
-- Release: `./target/release/eth-log-fetch`
+- Debug: `./target/debug/ethcli`
+- Release: `./target/release/ethcli`
+- Legacy alias: `./target/release/eth-log-fetch`
+
+## Available Commands
+
+```
+ethcli logs       # Fetch historical logs from contracts
+ethcli tx         # Analyze transaction(s)
+ethcli account    # Account operations (balance, transactions, transfers)
+ethcli contract   # Contract operations (ABI, source, creation)
+ethcli token      # Token operations (info, holders, balance)
+ethcli gas        # Gas price oracle and estimates
+ethcli sig        # Signature lookup (function selectors, event topics)
+ethcli endpoints  # Manage RPC endpoints
+ethcli config     # Manage configuration
+```
 
 ## Project Structure
 
@@ -39,6 +54,7 @@ src/
 ├── fetcher.rs        # Main LogFetcher coordinator
 ├── checkpoint.rs     # Resume/checkpoint system
 ├── proxy.rs          # Proxy rotation support
+├── tx.rs             # Transaction analysis
 ├── config/
 │   ├── mod.rs        # Config structs, builder pattern
 │   ├── chain.rs      # Chain enum (Ethereum, Polygon, etc.)
@@ -55,16 +71,32 @@ src/
 │   ├── parser.rs     # Event signature parser
 │   ├── fetcher.rs    # Etherscan ABI fetcher (v2 API)
 │   └── decoder.rs    # Log decoder (alloy dyn-abi)
-└── output/
-    ├── mod.rs        # OutputWriter trait
-    ├── json.rs       # JSON/NDJSON output
-    ├── csv.rs        # CSV output
-    └── sqlite.rs     # SQLite output
+├── output/
+│   ├── mod.rs        # OutputWriter trait
+│   ├── json.rs       # JSON/NDJSON output
+│   ├── csv.rs        # CSV output
+│   └── sqlite.rs     # SQLite output
+├── etherscan/
+│   ├── mod.rs        # Etherscan client wrapper
+│   ├── client.rs     # Extended Etherscan API client
+│   └── cache.rs      # Signature caching
+└── cli/
+    ├── mod.rs        # CLI command structure
+    ├── logs.rs       # Log fetching arguments
+    ├── tx.rs         # Transaction analysis args
+    ├── account.rs    # Account commands
+    ├── contract.rs   # Contract commands
+    ├── token.rs      # Token commands
+    ├── gas.rs        # Gas oracle commands
+    ├── sig.rs        # Signature lookup commands
+    ├── endpoints.rs  # Endpoint management
+    └── config.rs     # Config management
 ```
 
 ## Key Dependencies
 
 - **alloy 1.0**: Ethereum provider, types, ABI decoding
+- **foundry-block-explorers**: Etherscan API client
 - **tokio**: Async runtime
 - **clap**: CLI parsing
 - **serde/serde_json**: Serialization
@@ -75,17 +107,44 @@ src/
 
 ```bash
 # Fetch USDC Transfer events (small range)
-./target/release/eth-log-fetch \
-  -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+ethcli logs -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
   -e "Transfer(address,address,uint256)" \
   -f 21500000 -t 21500010
 
+# Analyze a transaction
+ethcli tx 0x123abc...
+
+# Get account balance
+ethcli account balance 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+
+# Get recent transactions for an address
+ethcli account txs 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+
+# Get contract ABI
+ethcli contract abi 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+
+# Get verified source code
+ethcli contract source 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+
+# Lookup function selector
+ethcli sig fn 0xa9059cbb
+
+# Get gas prices
+ethcli gas oracle
+
+# Get token info
+ethcli token info 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+
 # List available RPC endpoints
-./target/release/eth-log-fetch endpoints list
+ethcli endpoints list
 
 # Test a specific RPC endpoint
-./target/release/eth-log-fetch endpoints test https://eth.llamarpc.com
+ethcli endpoints test https://eth.llamarpc.com
 ```
+
+## Environment Variables
+
+- `ETHERSCAN_API_KEY`: Etherscan API key (optional, increases rate limit)
 
 ## Release Process
 
@@ -116,3 +175,4 @@ Installed hooks run automatically on commit:
 - Health tracking disables failing endpoints temporarily
 - Checkpoint system allows resuming interrupted fetches
 - Etherscan API v2 for ABI fetching (works without API key, rate limited)
+- foundry-block-explorers for account, contract, token, and gas commands

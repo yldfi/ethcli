@@ -1,12 +1,12 @@
-//! eth-log-fetcher - Fast Ethereum historical log fetcher
+//! ethcli - Comprehensive Ethereum CLI
 //!
-//! A Rust library and CLI for fetching EVM logs with parallel requests across
-//! multiple RPC endpoints, automatic failover, rate limiting handling, and proxy support.
+//! A Rust library and CLI for Ethereum data: fetching logs, analyzing transactions,
+//! querying accounts, and exploring contracts.
 //!
-//! # Example
+//! # Example - Fetching Logs
 //!
 //! ```rust,no_run
-//! use eth_log_fetcher::{Config, LogFetcher, Chain, OutputFormat};
+//! use ethcli::{Config, LogFetcher, Chain, OutputFormat};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,25 +28,31 @@
 //! ```
 
 pub mod abi;
-pub mod cache;
 pub mod checkpoint;
+pub mod cli;
 pub mod config;
 pub mod error;
+pub mod etherscan;
 pub mod fetcher;
 pub mod output;
 pub mod proxy;
 pub mod rpc;
 pub mod tx;
 
+// Legacy alias for cache module (now in etherscan::cache)
+pub mod cache {
+    pub use crate::etherscan::cache::*;
+}
+
 // Re-exports for convenience
 pub use abi::{AbiFetcher, DecodedLog, EventSignature, LogDecoder};
-pub use cache::{CacheStats, SignatureCache};
 pub use checkpoint::{Checkpoint, CheckpointManager};
 pub use config::{
     BlockNumber, BlockRange, Chain, ChainId, Config, ConfigBuilder, ConfigFile, EndpointConfig,
     OutputConfig, OutputFormat, ProxyConfig, RpcConfig,
 };
 pub use error::{AbiError, CheckpointError, ConfigError, Error, OutputError, Result, RpcError};
+pub use etherscan::{CacheStats, Client as EtherscanClient, SignatureCache, TokenMetadata};
 pub use fetcher::{
     FetchLogs, FetchProgress, FetchResult, FetchStats, LogFetcher, StreamingFetcher,
 };

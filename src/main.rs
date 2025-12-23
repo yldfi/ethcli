@@ -1,238 +1,22 @@
-//! eth-log-fetch CLI - Fast Ethereum historical log fetcher
+//! ethcli - Comprehensive Ethereum CLI
 
-use clap::{Args, Parser, Subcommand};
-use eth_log_fetcher::{
-    Chain, Config, ConfigFile, EndpointConfig, FetchProgress, FetchStats, LogFetcher, OutputFormat,
-    ProxyConfig, RpcConfig, RpcPool, StreamingFetcher,
+use clap::Parser;
+use ethcli::cli::{
+    config::ConfigCommands,
+    endpoints::EndpointCommands,
+    logs::{LogsArgs, ProxyArgs, RpcArgs},
+    tx::TxArgs,
+    Cli, Commands,
+};
+use ethcli::{
+    default_endpoints, format_analysis, Chain, Config, ConfigFile, Endpoint, EndpointConfig,
+    FetchProgress, FetchStats, LogFetcher, OutputFormat, OutputWriter, ProxyConfig, RpcConfig,
+    RpcPool, StreamingFetcher, TxAnalyzer,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
-
-#[derive(Parser)]
-#[command(name = "eth-log-fetch")]
-#[command(
-    version,
-    about = "Fast Ethereum historical log fetcher with parallel RPC requests"
-)]
-#[command(after_help = r#"EXAMPLES:
-    # Fetch all Transfer events from USDC contract
-    eth-log-fetch -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
-                  -e "Transfer(address,address,uint256)" \
-                  -f 18000000 -t 18100000 -o transfers.json
-
-    # Fetch all events (auto-fetch ABI from Etherscan)
-    eth-log-fetch -c 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
-                  -f 18000000 -t latest --format csv -o events.csv
-
-    # Resume interrupted fetch with high concurrency
-    eth-log-fetch -c 0x... -f 0 -t latest -n 20 --resume
-
-    # Use only fast endpoints
-    eth-log-fetch -c 0x... -f 0 -t latest --min-priority 8
-
-ENVIRONMENT VARIABLES:
-    ETHERSCAN_API_KEY    Etherscan API key (optional, increases rate limit)
-
-CONFIG FILE:
-    Default: ~/.config/eth-log-fetcher/config.toml
-"#)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-
-    /// Chain to query
-    #[arg(long, default_value = "ethereum", global = true)]
-    chain: String,
-
-    /// Contract address to fetch logs from
-    #[arg(short, long)]
-    contract: Option<String>,
-
-    /// Event signature or name (can be repeated for multiple events)
-    /// Examples: -e Transfer -e Approval
-    ///           -e "Transfer(address,address,uint256)"
-    /// Omit for all events from contract ABI
-    #[arg(short, long, action = clap::ArgAction::Append)]
-    event: Vec<String>,
-
-    /// Path to ABI JSON file
-    #[arg(long)]
-    abi: Option<PathBuf>,
-
-    /// Start block number (omit or use "auto" to start from contract creation)
-    #[arg(short = 'f', long)]
-    from_block: Option<String>,
-
-    /// End block number (or "latest")
-    #[arg(short = 't', long, default_value = "latest")]
-    to_block: String,
-
-    /// Output file path (stdout if not specified)
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Output format
-    #[arg(long, default_value = "json")]
-    format: String,
-
-    /// Fetch raw logs without decoding
-    #[arg(long)]
-    raw: bool,
-
-    /// Number of parallel requests
-    #[arg(short = 'n', long)]
-    concurrency: Option<usize>,
-
-    /// Resume from checkpoint if available
-    #[arg(long)]
-    resume: bool,
-
-    /// Checkpoint file path
-    #[arg(long)]
-    checkpoint: Option<PathBuf>,
-
-    /// Increase verbosity (-v, -vv, -vvv)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
-
-    /// Suppress progress output
-    #[arg(short, long)]
-    quiet: bool,
-
-    /// Fail if any chunk fails (default: warn and continue)
-    #[arg(long)]
-    strict: bool,
-
-    /// Etherscan API key
-    #[arg(long, env = "ETHERSCAN_API_KEY")]
-    etherscan_key: Option<String>,
-
-    #[command(flatten)]
-    rpc: RpcArgs,
-
-    #[command(flatten)]
-    proxy: ProxyArgs,
-}
-
-#[derive(Args)]
-struct RpcArgs {
-    /// Use only this RPC endpoint (can be repeated)
-    #[arg(long = "rpc", action = clap::ArgAction::Append)]
-    rpc_urls: Vec<String>,
-
-    /// Add RPC to default pool (can be repeated)
-    #[arg(long = "add-rpc", action = clap::ArgAction::Append)]
-    add_rpc: Vec<String>,
-
-    /// Exclude RPC from pool (can be repeated)
-    #[arg(long = "exclude-rpc", action = clap::ArgAction::Append)]
-    exclude_rpc: Vec<String>,
-
-    /// Load RPC URLs from file
-    #[arg(long)]
-    rpc_file: Option<PathBuf>,
-
-    /// Only use endpoints with priority >= N
-    #[arg(long, default_value = "1")]
-    min_priority: u8,
-
-    /// Request timeout in seconds
-    #[arg(long)]
-    timeout: Option<u64>,
-
-    /// Max retries per request
-    #[arg(long)]
-    retries: Option<u32>,
-}
-
-#[derive(Args)]
-struct ProxyArgs {
-    /// Use proxy for all requests (http/https/socks5)
-    #[arg(long)]
-    proxy: Option<String>,
-
-    /// Load proxies from file, rotate between them
-    #[arg(long)]
-    proxy_file: Option<PathBuf>,
-
-    /// Rotate proxy per request
-    #[arg(long)]
-    proxy_rotate: bool,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Fetch logs from a contract
-    Fetch,
-
-    /// Analyze a transaction
-    Tx {
-        /// Transaction hash(es) (with or without 0x prefix)
-        hashes: Vec<String>,
-
-        /// Read transaction hashes from file (one per line)
-        #[arg(long, short = 'f')]
-        file: Option<PathBuf>,
-
-        /// Read transaction hashes from stdin (one per line)
-        #[arg(long)]
-        stdin: bool,
-
-        /// Output format (pretty, json, or ndjson)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
-
-        /// Process transactions in parallel batches
-        #[arg(long, default_value = "10")]
-        batch_size: usize,
-
-        /// Enrich with Etherscan data (contract names, token symbols, function decoding)
-        /// Slower but provides more detailed output
-        #[arg(long)]
-        enrich: bool,
-    },
-
-    /// Manage and test RPC endpoints
-    Endpoints {
-        #[command(subcommand)]
-        action: EndpointCommands,
-    },
-
-    /// Manage configuration
-    Config {
-        #[command(subcommand)]
-        action: ConfigCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum EndpointCommands {
-    /// List all configured endpoints
-    List,
-
-    /// Test an endpoint for archive support
-    Test {
-        /// RPC URL to test
-        url: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum ConfigCommands {
-    /// Show config file path
-    Path,
-
-    /// Set Etherscan API key
-    SetEtherscanKey {
-        /// API key
-        key: String,
-    },
-
-    /// Show current config
-    Show,
-}
 
 /// Format a number with thousands separators
 fn format_thousands(n: u64) -> String {
@@ -281,57 +65,71 @@ async fn main() -> anyhow::Result<()> {
         .with(EnvFilter::new(filter))
         .init();
 
+    // Parse chain once for use in handlers
+    let chain: Chain = cli.chain.parse()?;
+
     // Handle subcommands
     match &cli.command {
-        Some(Commands::Tx {
-            hashes,
-            file,
-            stdin,
-            output,
-            batch_size,
-            enrich,
-        }) => {
-            return handle_tx(
-                hashes,
-                file.as_ref(),
-                *stdin,
-                output,
-                *batch_size,
-                *enrich,
-                &cli,
+        Commands::Logs(args) => {
+            return run_logs(args, &cli).await;
+        }
+        Commands::Tx(args) => {
+            return handle_tx(args, &cli).await;
+        }
+        Commands::Account { action } => {
+            return ethcli::cli::account::handle(
+                action,
+                chain,
+                cli.etherscan_key.clone(),
+                cli.quiet,
             )
             .await;
         }
-        Some(Commands::Endpoints { action }) => {
+        Commands::Contract { action } => {
+            return ethcli::cli::contract::handle(
+                action,
+                chain,
+                cli.etherscan_key.clone(),
+                cli.quiet,
+            )
+            .await;
+        }
+        Commands::Token { action } => {
+            return ethcli::cli::token::handle(action, chain, cli.etherscan_key.clone(), cli.quiet)
+                .await;
+        }
+        Commands::Gas { action } => {
+            return ethcli::cli::gas::handle(action, chain, cli.etherscan_key.clone(), cli.quiet)
+                .await;
+        }
+        Commands::Sig { action } => {
+            return ethcli::cli::sig::handle(action, chain, cli.etherscan_key.clone(), cli.quiet)
+                .await;
+        }
+        Commands::Endpoints { action } => {
             return handle_endpoints(action, &cli).await;
         }
-        Some(Commands::Config { action }) => {
+        Commands::Config { action } => {
             return handle_config(action).await;
         }
-        _ => {}
     }
-
-    // Default: fetch logs
-    run_fetch(&cli).await
 }
 
-async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
-    let contract = cli
-        .contract
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Contract address is required. Use -c or --contract"))?;
+/// Run logs command with LogsArgs
+async fn run_logs(args: &LogsArgs, cli: &Cli) -> anyhow::Result<()> {
+    let contract = &args.contract;
 
     // Parse chain
     let chain: Chain = cli.chain.parse()?;
 
     // Parse output format
-    let format: OutputFormat = cli.format.parse()?;
+    let format: OutputFormat = args.format.parse()?;
 
     // Parse to_block
-    let to_block = if cli.to_block.to_lowercase() == "latest" {
-        eth_log_fetcher::BlockNumber::Latest
+    let to_block = if args.to_block.to_lowercase() == "latest" {
+        ethcli::BlockNumber::Latest
     } else {
-        eth_log_fetcher::BlockNumber::Number(cli.to_block.parse()?)
+        ethcli::BlockNumber::Number(args.to_block.parse()?)
     };
 
     // Load config file for additional settings
@@ -345,7 +143,7 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     });
 
     // Apply defaults: CLI > config file > hardcoded defaults
-    let concurrency = cli.concurrency.unwrap_or_else(|| {
+    let concurrency = args.concurrency.unwrap_or_else(|| {
         config_file
             .as_ref()
             .map(|c| c.settings.concurrency)
@@ -353,10 +151,11 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     });
 
     // Build RPC config
-    let rpc_config = build_rpc_config(cli, &config_file)?;
+    let rpc_config =
+        build_rpc_config_from_logs_args(&args.rpc, &args.proxy, &config_file, concurrency)?;
 
     // Parse from_block (can be number, "auto", or omitted for auto-detect)
-    let (from_block, auto_from_block) = match &cli.from_block {
+    let (from_block, auto_from_block) = match &args.from_block {
         Some(s) if s.to_lowercase() == "auto" => (0, true),
         Some(s) => (s.parse::<u64>()?, false),
         None => (0, true), // Default to auto-detect from contract creation
@@ -370,27 +169,27 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
         .to_block(to_block)
         .output_format(format)
         .concurrency(concurrency)
-        .raw(cli.raw)
-        .resume(cli.resume)
+        .raw(args.raw)
+        .resume(args.resume)
         .quiet(cli.quiet)
         .verbosity(cli.verbose)
         .auto_from_block(auto_from_block)
         .rpc_config(rpc_config);
 
     // Add event filters (supports multiple: -e Transfer -e Approval)
-    for event in &cli.event {
+    for event in &args.event {
         builder = builder.event(event);
     }
 
-    if let Some(abi) = &cli.abi {
+    if let Some(abi) = &args.abi {
         builder = builder.abi_path(abi);
     }
 
-    if let Some(output) = &cli.output {
+    if let Some(output) = &args.output {
         builder = builder.output_path(output);
     }
 
-    if let Some(checkpoint) = &cli.checkpoint {
+    if let Some(checkpoint) = &args.checkpoint {
         builder = builder.checkpoint_path(checkpoint);
     }
 
@@ -401,19 +200,19 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
     let config = builder.build()?;
 
     // Create output writer early for streaming mode
-    let mut writer = eth_log_fetcher::create_writer(format, cli.output.as_deref())?;
+    let mut writer = ethcli::create_writer(format, args.output.as_deref())?;
 
     if !cli.quiet {
         eprintln!("Connecting to {} endpoints...", chain.display_name());
     }
 
     let start = Instant::now();
-    let (total_logs, stats) = if cli.resume {
+    let (total_logs, stats) = if args.resume {
         // Use streaming mode with checkpoint support
-        run_streaming_fetch(cli, config, &mut writer).await?
+        run_streaming_fetch(args, cli, config, &mut writer).await?
     } else {
         // Use batch mode (faster for smaller queries)
-        run_batch_fetch(cli, config, &mut writer).await?
+        run_batch_fetch_logs(args, cli, config, &mut writer).await?
     };
     let elapsed = start.elapsed();
 
@@ -421,7 +220,7 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
 
     // Report failures
     if !stats.is_complete() {
-        if cli.strict {
+        if args.strict {
             eprintln!(
                 "Error: {} of {} chunks failed (--strict mode)",
                 stats.chunks_failed, stats.chunks_total
@@ -454,7 +253,7 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
         } else {
             format!(" (incomplete: {} chunks failed)", stats.chunks_failed)
         };
-        let mode = if cli.resume { " [streaming]" } else { "" };
+        let mode = if args.resume { " [streaming]" } else { "" };
         eprintln!(
             "Fetched {} logs in {:.2}s{}{}",
             total_logs,
@@ -468,10 +267,11 @@ async fn run_fetch(cli: &Cli) -> anyhow::Result<()> {
 }
 
 /// Run fetch in batch mode (loads all into memory, faster for small queries)
-async fn run_batch_fetch(
+async fn run_batch_fetch_logs(
+    _args: &LogsArgs,
     cli: &Cli,
     config: Config,
-    writer: &mut Box<dyn eth_log_fetcher::OutputWriter>,
+    writer: &mut Box<dyn ethcli::OutputWriter>,
 ) -> anyhow::Result<(usize, FetchStats)> {
     let fetcher = LogFetcher::new(config).await?;
 
@@ -522,20 +322,18 @@ async fn run_batch_fetch(
 
 /// Run fetch in streaming mode (writes incrementally, supports resume)
 async fn run_streaming_fetch(
+    args: &LogsArgs,
     cli: &Cli,
     config: Config,
-    writer: &mut Box<dyn eth_log_fetcher::OutputWriter>,
+    writer: &mut Box<dyn OutputWriter>,
 ) -> anyhow::Result<(usize, FetchStats)> {
     let mut fetcher = StreamingFetcher::new(config.clone()).await?;
 
     // Enable checkpointing if path specified or use default
-    let checkpoint_path = cli.checkpoint.clone().unwrap_or_else(|| {
+    let checkpoint_path = args.checkpoint.clone().unwrap_or_else(|| {
         PathBuf::from(format!(
             ".eth-log-fetch-{}.checkpoint",
-            cli.contract
-                .as_ref()
-                .map(|c| &c[..8.min(c.len())])
-                .unwrap_or("default")
+            &args.contract[..8.min(args.contract.len())]
         ))
     });
 
@@ -586,16 +384,22 @@ async fn run_streaming_fetch(
     Ok((total_logs, stats))
 }
 
-fn build_rpc_config(cli: &Cli, config_file: &Option<ConfigFile>) -> anyhow::Result<RpcConfig> {
+/// Build RPC config from LogsArgs (has embedded RPC/Proxy args)
+fn build_rpc_config_from_logs_args(
+    rpc: &RpcArgs,
+    proxy: &ProxyArgs,
+    config_file: &Option<ConfigFile>,
+    concurrency: usize,
+) -> anyhow::Result<RpcConfig> {
     let mut rpc_config = RpcConfig::default();
 
     // Custom endpoints from CLI
-    if !cli.rpc.rpc_urls.is_empty() {
-        rpc_config.endpoints = cli.rpc.rpc_urls.iter().map(EndpointConfig::new).collect();
+    if !rpc.rpc_urls.is_empty() {
+        rpc_config.endpoints = rpc.rpc_urls.iter().map(EndpointConfig::new).collect();
     }
 
     // Load from file
-    if let Some(path) = &cli.rpc.rpc_file {
+    if let Some(path) = &rpc.rpc_file {
         let content = std::fs::read_to_string(path)?;
         for line in content.lines() {
             let url = line.trim();
@@ -615,10 +419,10 @@ fn build_rpc_config(cli: &Cli, config_file: &Option<ConfigFile>) -> anyhow::Resu
     }
 
     // Additional endpoints
-    rpc_config.add_endpoints = cli.rpc.add_rpc.clone();
+    rpc_config.add_endpoints = rpc.add_rpc.clone();
 
     // Excluded endpoints from CLI
-    rpc_config.exclude_endpoints = cli.rpc.exclude_rpc.clone();
+    rpc_config.exclude_endpoints = rpc.exclude_rpc.clone();
 
     // Add disabled endpoints from config file
     if let Some(cf) = config_file {
@@ -627,38 +431,64 @@ fn build_rpc_config(cli: &Cli, config_file: &Option<ConfigFile>) -> anyhow::Resu
             .extend(cf.disabled_endpoints.urls.clone());
     }
 
-    rpc_config.min_priority = cli.rpc.min_priority;
+    rpc_config.min_priority = rpc.min_priority;
 
     // Apply defaults: CLI > config file > hardcoded defaults
-    rpc_config.timeout_secs = cli.rpc.timeout.unwrap_or_else(|| {
+    rpc_config.timeout_secs = rpc.timeout.unwrap_or_else(|| {
         config_file
             .as_ref()
             .map(|c| c.settings.timeout_seconds)
             .unwrap_or(30)
     });
 
-    rpc_config.max_retries = cli.rpc.retries.unwrap_or_else(|| {
+    rpc_config.max_retries = rpc.retries.unwrap_or_else(|| {
         config_file
             .as_ref()
             .map(|c| c.settings.retry_attempts)
             .unwrap_or(3)
     });
 
-    rpc_config.concurrency = cli.concurrency.unwrap_or_else(|| {
-        config_file
-            .as_ref()
-            .map(|c| c.settings.concurrency)
-            .unwrap_or(5)
-    });
+    rpc_config.concurrency = concurrency;
 
     // Proxy config
-    if cli.proxy.proxy.is_some() || cli.proxy.proxy_file.is_some() {
+    if proxy.proxy.is_some() || proxy.proxy_file.is_some() {
         rpc_config.proxy = Some(ProxyConfig {
-            url: cli.proxy.proxy.clone(),
-            file: cli.proxy.proxy_file.clone(),
-            rotate_per_request: cli.proxy.proxy_rotate,
+            url: proxy.proxy.clone(),
+            file: proxy.proxy_file.clone(),
+            rotate_per_request: proxy.proxy_rotate,
         });
     } else if let Some(cf) = config_file {
+        rpc_config.proxy = cf.proxy_config();
+    }
+
+    Ok(rpc_config)
+}
+
+/// Build default RPC config (for tx command that doesn't have RPC args)
+fn build_default_rpc_config(config_file: &Option<ConfigFile>) -> anyhow::Result<RpcConfig> {
+    let mut rpc_config = RpcConfig::default();
+
+    // Add custom endpoints from config file
+    if let Some(cf) = config_file {
+        for endpoint in &cf.endpoints {
+            if !rpc_config.endpoints.iter().any(|e| e.url == endpoint.url) {
+                rpc_config.endpoints.push(endpoint.clone());
+            }
+        }
+    }
+
+    // Add disabled endpoints from config file
+    if let Some(cf) = config_file {
+        rpc_config
+            .exclude_endpoints
+            .extend(cf.disabled_endpoints.urls.clone());
+    }
+
+    // Apply config file defaults
+    if let Some(cf) = config_file {
+        rpc_config.timeout_secs = cf.settings.timeout_seconds;
+        rpc_config.max_retries = cf.settings.retry_attempts;
+        rpc_config.concurrency = cf.settings.concurrency;
         rpc_config.proxy = cf.proxy_config();
     }
 
@@ -669,7 +499,7 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
     match action {
         EndpointCommands::List => {
             let chain: Chain = cli.chain.parse()?;
-            let endpoints = eth_log_fetcher::default_endpoints(chain);
+            let endpoints = default_endpoints(chain);
 
             println!(
                 "RPC ENDPOINTS for {} ({} default)\n",
@@ -752,7 +582,7 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
             std::io::Write::flush(&mut std::io::stdout())?;
 
             // Create endpoint directly to test
-            let endpoint = eth_log_fetcher::Endpoint::new(EndpointConfig::new(url), 10, None)?;
+            let endpoint = Endpoint::new(EndpointConfig::new(url), 10, None)?;
 
             match endpoint.test_archive_support().await {
                 Ok(true) => println!("✓ OK (historical state accessible)"),
@@ -788,7 +618,7 @@ async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
             } else {
                 println!("No config file found at: {}", path.display());
                 println!("\nCreate one with:");
-                println!("  eth-log-fetch config set-etherscan-key YOUR_KEY");
+                println!("  ethcli config set-etherscan-key YOUR_KEY");
             }
         }
     }
@@ -796,22 +626,14 @@ async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_tx(
-    hashes: &[String],
-    file: Option<&PathBuf>,
-    read_stdin: bool,
-    output_format: &str,
-    batch_size: usize,
-    enrich: bool,
-    cli: &Cli,
-) -> anyhow::Result<()> {
+async fn handle_tx(args: &TxArgs, cli: &Cli) -> anyhow::Result<()> {
     use std::io::BufRead;
 
     // Collect all hashes from various sources
-    let mut all_hashes: Vec<String> = hashes.to_vec();
+    let mut all_hashes: Vec<String> = args.hashes.clone();
 
     // Read from file if specified
-    if let Some(path) = file {
+    if let Some(path) = &args.file {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         for line in reader.lines() {
@@ -824,7 +646,7 @@ async fn handle_tx(
     }
 
     // Read from stdin if specified
-    if read_stdin {
+    if args.stdin {
         let stdin = std::io::stdin();
         let reader = stdin.lock();
         for line in reader.lines() {
@@ -848,8 +670,8 @@ async fn handle_tx(
     // Load config file for additional settings
     let config_file = ConfigFile::load_default().ok().flatten();
 
-    // Build RPC config
-    let rpc_config = build_rpc_config(cli, &config_file)?;
+    // Build RPC config with defaults
+    let rpc_config = build_default_rpc_config(&config_file)?;
 
     // Create RPC pool
     let pool = RpcPool::new(chain, &rpc_config)?;
@@ -863,12 +685,12 @@ async fn handle_tx(
             tx_count,
             if tx_count == 1 { "" } else { "s" },
             endpoint_count,
-            batch_size
+            args.batch_size
         );
     }
 
     // Create analyzer
-    let analyzer = std::sync::Arc::new(eth_log_fetcher::TxAnalyzer::new(pool, chain));
+    let analyzer = std::sync::Arc::new(TxAnalyzer::new(pool, chain));
 
     let start = Instant::now();
     let mut all_analyses = Vec::new();
@@ -877,8 +699,8 @@ async fn handle_tx(
     let mut failed_count = 0;
 
     // Process in batches for parallelism
-    for (batch_idx, batch) in all_hashes.chunks(batch_size).enumerate() {
-        let batch_start = batch_idx * batch_size;
+    for (batch_idx, batch) in all_hashes.chunks(args.batch_size).enumerate() {
+        let batch_start = batch_idx * args.batch_size;
 
         if !cli.quiet && tx_count > 1 {
             eprint!(
@@ -890,6 +712,7 @@ async fn handle_tx(
         }
 
         // Process batch in parallel
+        let enrich = args.enrich;
         let futures: Vec<_> = batch
             .iter()
             .enumerate()
@@ -948,7 +771,7 @@ async fn handle_tx(
     let elapsed = start.elapsed();
 
     // Output
-    match output_format {
+    match args.output.as_str() {
         "json" => {
             if analyses.len() == 1 {
                 let json = serde_json::to_string_pretty(&analyses[0])?;
@@ -972,7 +795,7 @@ async fn handle_tx(
                     println!("\n{}", "=".repeat(80));
                     println!();
                 }
-                println!("{}", eth_log_fetcher::format_analysis(analysis));
+                println!("{}", format_analysis(analysis));
             }
         }
     }
