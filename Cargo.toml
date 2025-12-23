@@ -1,19 +1,24 @@
 [package]
-name = "eth-log-fetcher"
-version = "0.3.2"
+name = "ethcli"
+version = "0.4.0"
 edition = "2021"
-description = "Fast Ethereum historical log fetcher with parallel RPC requests"
+description = "Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts"
 license = "MIT"
-repository = "https://github.com/example/eth-log-fetcher"
-keywords = ["ethereum", "logs", "events", "rpc", "blockchain"]
+repository = "https://github.com/example/ethcli"
+keywords = ["ethereum", "cli", "etherscan", "blockchain", "web3"]
 categories = ["command-line-utilities", "web-programming"]
 
 [[bin]]
-name = "eth-log-fetch"
+name = "ethcli"
 path = "src/main.rs"
 
+# Legacy alias for backward compatibility
+[[bin]]
+name = "eth-log-fetch"
+path = "src/bin/eth-log-fetch.rs"
+
 [lib]
-name = "eth_log_fetcher"
+name = "ethcli"
 path = "src/lib.rs"
 
 [dependencies]
@@ -30,6 +35,10 @@ alloy = { version = "1.0", features = [
     "transport-http",
     "dyn-abi",
 ] }
+
+# Etherscan API
+foundry-block-explorers = "0.22"
+alloy-chains = "0.2"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = [
