@@ -16,7 +16,10 @@
       "Bash(gh run view:*)",
       "Bash(cargo update:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(gh release list:*)",
+      "Bash(git fetch:*)",
+      "Bash(gh workflow run:*)"
     ]
   }
 }
