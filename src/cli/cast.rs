@@ -396,3 +396,256 @@ fn split_types(types_str: &str) -> Vec<&str> {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== to_wei tests ====================
+
+    #[test]
+    fn test_to_wei_eth_whole() {
+        let result = to_wei("1", "eth").unwrap();
+        assert_eq!(result, "1000000000000000000");
+    }
+
+    #[test]
+    fn test_to_wei_eth_decimal() {
+        let result = to_wei("1.5", "eth").unwrap();
+        assert_eq!(result, "1500000000000000000");
+    }
+
+    #[test]
+    fn test_to_wei_eth_small_decimal() {
+        let result = to_wei("0.001", "eth").unwrap();
+        assert_eq!(result, "1000000000000000");
+    }
+
+    #[test]
+    fn test_to_wei_gwei() {
+        let result = to_wei("1", "gwei").unwrap();
+        assert_eq!(result, "1000000000");
+    }
+
+    #[test]
+    fn test_to_wei_gwei_decimal() {
+        let result = to_wei("1.5", "gwei").unwrap();
+        assert_eq!(result, "1500000000");
+    }
+
+    #[test]
+    fn test_to_wei_wei() {
+        let result = to_wei("1000", "wei").unwrap();
+        assert_eq!(result, "1000");
+    }
+
+    #[test]
+    fn test_to_wei_zero() {
+        let result = to_wei("0", "eth").unwrap();
+        assert_eq!(result, "0");
+    }
+
+    #[test]
+    fn test_to_wei_ether_alias() {
+        let result = to_wei("1", "ether").unwrap();
+        assert_eq!(result, "1000000000000000000");
+    }
+
+    #[test]
+    fn test_to_wei_invalid_unit() {
+        let result = to_wei("1", "invalid");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown unit"));
+    }
+
+    #[test]
+    fn test_to_wei_invalid_value() {
+        let result = to_wei("abc", "eth");
+        assert!(result.is_err());
+    }
+
+    // ==================== from_wei tests ====================
+
+    #[test]
+    fn test_from_wei_to_eth_whole() {
+        let result = from_wei("1000000000000000000", "eth").unwrap();
+        assert_eq!(result, "1.0");
+    }
+
+    #[test]
+    fn test_from_wei_to_eth_fractional() {
+        let result = from_wei("1500000000000000000", "eth").unwrap();
+        assert_eq!(result, "1.5");
+    }
+
+    #[test]
+    fn test_from_wei_to_eth_small() {
+        let result = from_wei("1000000000000000", "eth").unwrap();
+        assert_eq!(result, "0.001");
+    }
+
+    #[test]
+    fn test_from_wei_to_gwei() {
+        let result = from_wei("1000000000", "gwei").unwrap();
+        assert_eq!(result, "1.0");
+    }
+
+    #[test]
+    fn test_from_wei_to_gwei_fractional() {
+        let result = from_wei("1500000000", "gwei").unwrap();
+        assert_eq!(result, "1.5");
+    }
+
+    #[test]
+    fn test_from_wei_to_wei() {
+        let result = from_wei("12345", "wei").unwrap();
+        assert_eq!(result, "12345");
+    }
+
+    #[test]
+    fn test_from_wei_zero() {
+        let result = from_wei("0", "eth").unwrap();
+        assert_eq!(result, "0.0");
+    }
+
+    #[test]
+    fn test_from_wei_invalid_unit() {
+        let result = from_wei("1000", "invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_wei_invalid_value() {
+        let result = from_wei("not_a_number", "eth");
+        assert!(result.is_err());
+    }
+
+    // ==================== split_types tests ====================
+
+    #[test]
+    fn test_split_types_simple() {
+        let result = split_types("address,uint256");
+        assert_eq!(result, vec!["address", "uint256"]);
+    }
+
+    #[test]
+    fn test_split_types_single() {
+        let result = split_types("uint256");
+        assert_eq!(result, vec!["uint256"]);
+    }
+
+    #[test]
+    fn test_split_types_empty() {
+        let result = split_types("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_split_types_nested_tuple() {
+        let result = split_types("(address,uint256),bytes");
+        assert_eq!(result, vec!["(address,uint256)", "bytes"]);
+    }
+
+    #[test]
+    fn test_split_types_deeply_nested() {
+        let result = split_types("address,(uint256,(bool,bytes32)),string");
+        assert_eq!(
+            result,
+            vec!["address", "(uint256,(bool,bytes32))", "string"]
+        );
+    }
+
+    #[test]
+    fn test_split_types_with_spaces() {
+        let result = split_types("address, uint256, bytes32");
+        assert_eq!(result, vec!["address", "uint256", "bytes32"]);
+    }
+
+    // ==================== abi_encode tests ====================
+
+    #[test]
+    fn test_abi_encode_no_args() {
+        let result = abi_encode("totalSupply()", &[]).unwrap();
+        // totalSupply() selector = 0x18160ddd
+        assert!(result.starts_with("0x18160ddd"));
+        assert_eq!(result.len(), 10); // 0x + 8 hex chars
+    }
+
+    #[test]
+    fn test_abi_encode_transfer() {
+        let args = vec![
+            "0x0000000000000000000000000000000000000001".to_string(),
+            "1000".to_string(),
+        ];
+        let result = abi_encode("transfer(address,uint256)", &args).unwrap();
+        // transfer(address,uint256) selector = 0xa9059cbb
+        assert!(result.starts_with("0xa9059cbb"));
+    }
+
+    #[test]
+    fn test_abi_encode_wrong_arg_count() {
+        let args = vec!["0x0000000000000000000000000000000000000001".to_string()];
+        let result = abi_encode("transfer(address,uint256)", &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Expected 2"));
+    }
+
+    // ==================== abi_decode tests ====================
+
+    #[test]
+    fn test_abi_decode_uint256() {
+        // Encoded value of 1000 as uint256
+        let data = "0x00000000000000000000000000000000000000000000000000000000000003e8";
+        let result = abi_decode("(uint256)", data).unwrap();
+        assert!(result.contains("1000"));
+    }
+
+    #[test]
+    fn test_abi_decode_empty_types() {
+        let result = abi_decode("()", "0x").unwrap();
+        assert_eq!(result, "()");
+    }
+
+    // ==================== function selector tests ====================
+
+    #[test]
+    fn test_transfer_selector() {
+        let hash = keccak256("transfer(address,uint256)".as_bytes());
+        let selector = hex::encode(&hash[..4]);
+        assert_eq!(selector, "a9059cbb");
+    }
+
+    #[test]
+    fn test_approve_selector() {
+        let hash = keccak256("approve(address,uint256)".as_bytes());
+        let selector = hex::encode(&hash[..4]);
+        assert_eq!(selector, "095ea7b3");
+    }
+
+    #[test]
+    fn test_balance_of_selector() {
+        let hash = keccak256("balanceOf(address)".as_bytes());
+        let selector = hex::encode(&hash[..4]);
+        assert_eq!(selector, "70a08231");
+    }
+
+    // ==================== event topic tests ====================
+
+    #[test]
+    fn test_transfer_event_topic() {
+        let hash = keccak256("Transfer(address,address,uint256)".as_bytes());
+        assert_eq!(
+            format!("{:#x}", hash),
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        );
+    }
+
+    #[test]
+    fn test_approval_event_topic() {
+        let hash = keccak256("Approval(address,address,uint256)".as_bytes());
+        assert_eq!(
+            format!("{:#x}", hash),
+            "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925"
+        );
+    }
+}
