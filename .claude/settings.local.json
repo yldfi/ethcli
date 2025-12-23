@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.etherscan.io)",
+      "Bash(cargo check:*)",
+      "Bash(gemini -p \"@src/cli/account.rs @src/cli/contract.rs @src/cli/gas.rs The cargo check errors show:\n1. account.rs line 262: tx.to is Option<Address>, not GenesisOption - can''t use .value\\(\\)\n2. contract.rs: Metadata struct has changed - no settings field, source_code is SourceCodeMetadata not String\n3. gas.rs: GasOracle not serializable, gas_estimate expects U256 not u64\n\nPlease provide the fixed code for these three files that will compile correctly with foundry-block-explorers 0.22\")",
+      "Bash(./target/release/ethcli:*)",
+      "Bash(git restore:*)",
+      "Bash(git push:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh run view:*)",
+      "Bash(cargo update:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

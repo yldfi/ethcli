@@ -71,8 +71,7 @@ impl Endpoint {
         })?;
 
         // Create provider (proxy support would require lower-level transport with custom reqwest client)
-        #[allow(deprecated)]
-        let provider = ProviderBuilder::new().on_http(url);
+        let provider = ProviderBuilder::new().connect_http(url);
 
         Ok(Self {
             config,
