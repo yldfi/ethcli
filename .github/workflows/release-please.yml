@@ -70,14 +70,14 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czvf ../../../eth-log-fetch-${{ matrix.name }}.tar.gz eth-log-fetch
+          tar czvf ../../../ethcli-${{ matrix.name }}.tar.gz ethcli
           cd ../../..
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../eth-log-fetch-${{ matrix.name }}.zip eth-log-fetch.exe
+          7z a ../../../ethcli-${{ matrix.name }}.zip ethcli.exe
           cd ../../..
 
       - name: Upload Release Assets
@@ -85,5 +85,5 @@ jobs:
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
-            eth-log-fetch-*.tar.gz
-            eth-log-fetch-*.zip
+            ethcli-*.tar.gz
+            ethcli-*.zip
