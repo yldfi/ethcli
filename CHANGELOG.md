@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/michaeldim/ethcli/compare/v0.4.0...v0.5.0) (2025-12-23)
+
+
+### Features
+
+* add cast, rpc, and ens commands ([6d6a784](https://github.com/michaeldim/ethcli/commit/6d6a784625a1ba688df0ad9879721917e2b608b3))
+
+
+### Bug Fixes
+
+* update release workflow to use ethcli binary name ([0e25f1b](https://github.com/michaeldim/ethcli/commit/0e25f1ba4dd74b6165ed7e46bba4de075fe7ed75))
+
 ## [0.4.0](https://github.com/michaeldim/eth-log-fetcher/compare/v0.3.2...v0.4.0) (2025-12-23)
 
 
