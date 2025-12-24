@@ -137,16 +137,31 @@ pub async fn handle(
 
                 for item in &items {
                     // Sanitize contract name to prevent path traversal attacks
-                    // Remove any path separators and dangerous characters
+                    // Remove any path separators and dangerous characters, limit length
                     let safe_name: String = item
                         .contract_name
                         .chars()
                         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .take(251) // Max 251 chars + ".sol" = 255 (filesystem limit)
                         .collect();
 
                     if safe_name.is_empty() {
                         eprintln!(
                             "  Warning: Skipping contract with unsafe name: {}",
+                            item.contract_name
+                        );
+                        continue;
+                    }
+
+                    // Check for Windows reserved filenames
+                    const RESERVED_NAMES: &[&str] = &[
+                        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6",
+                        "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6",
+                        "LPT7", "LPT8", "LPT9",
+                    ];
+                    if RESERVED_NAMES.contains(&safe_name.to_uppercase().as_str()) {
+                        eprintln!(
+                            "  Warning: Skipping contract with reserved name: {}",
                             item.contract_name
                         );
                         continue;
