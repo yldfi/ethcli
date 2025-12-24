@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/michaeldim/ethcli/compare/v0.5.1...v0.6.0) (2025-12-24)
+
+
+### Features
+
+* unified RPC endpoint management with auto-optimization ([4d71d0b](https://github.com/michaeldim/ethcli/commit/4d71d0bc29fe8fdb646eaba531e1fea74bd6db93))
+
 ## [0.5.1](https://github.com/michaeldim/ethcli/compare/v0.5.0...v0.5.1) (2025-12-23)
 
 
