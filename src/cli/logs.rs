@@ -39,6 +39,10 @@ pub struct LogsArgs {
     #[arg(long)]
     pub raw: bool,
 
+    /// Include block timestamps in output (requires extra RPC calls)
+    #[arg(long)]
+    pub timestamps: bool,
+
     /// Number of parallel requests
     #[arg(short = 'n', long)]
     pub concurrency: Option<usize>,

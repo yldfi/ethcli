@@ -1,5 +1,6 @@
 //! ethcli - Comprehensive Ethereum CLI
 
+use alloy::providers::Provider;
 use clap::Parser;
 use ethcli::cli::{
     config::ConfigCommands,
@@ -9,11 +10,12 @@ use ethcli::cli::{
     Cli, Commands,
 };
 use ethcli::{
-    format_analysis, Chain, Config, ConfigFile, Endpoint, EndpointConfig, FetchProgress,
-    FetchStats, LogFetcher, OutputFormat, OutputWriter, ProxyConfig, RpcConfig, RpcPool,
-    StreamingFetcher, TxAnalyzer,
+    format_analysis, Chain, Config, ConfigFile, DecodedLog, Endpoint, EndpointConfig, FetchLogs,
+    FetchProgress, FetchStats, LogFetcher, OutputFormat, OutputWriter, ProxyConfig, RpcConfig,
+    RpcPool, StreamingFetcher, TxAnalyzer,
 };
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -299,7 +301,7 @@ async fn run_logs(args: &LogsArgs, cli: &Cli) -> anyhow::Result<()> {
 
 /// Run fetch in batch mode (loads all into memory, faster for small queries)
 async fn run_batch_fetch_logs(
-    _args: &LogsArgs,
+    args: &LogsArgs,
     cli: &Cli,
     config: Config,
     writer: &mut Box<dyn ethcli::OutputWriter>,
@@ -327,6 +329,8 @@ async fn run_batch_fetch_logs(
     };
 
     let pb_clone = pb.clone();
+    // Select an endpoint for timestamp fetching before moving the fetcher
+    let endpoint_for_timestamps = fetcher.pool().select_archive_endpoints(1);
     let fetcher = fetcher.with_progress(move |progress: FetchProgress| {
         if let Some(ref pb) = pb_clone {
             pb.set_position(progress.percent as u64);
@@ -337,10 +341,20 @@ async fn run_batch_fetch_logs(
         }
     });
 
-    let result = fetcher.fetch_all().await?;
+    let mut result = fetcher.fetch_all().await?;
 
     if let Some(ref pb) = pb {
         pb.finish_and_clear();
+    }
+
+    // Add timestamps if requested
+    if args.timestamps {
+        if let FetchLogs::Decoded(ref mut logs) = result.logs {
+            if !cli.quiet {
+                eprintln!("Fetching block timestamps for {} logs...", logs.len());
+            }
+            add_timestamps_to_logs(logs, &endpoint_for_timestamps).await?;
+        }
     }
 
     let total_logs = result.len();
@@ -349,6 +363,58 @@ async fn run_batch_fetch_logs(
     writer.write_logs(&result)?;
 
     Ok((total_logs, stats))
+}
+
+/// Fetch block timestamps and add them to logs
+async fn add_timestamps_to_logs(
+    logs: &mut [DecodedLog],
+    endpoints: &[Endpoint],
+) -> anyhow::Result<()> {
+    // Collect unique block numbers
+    let mut block_numbers: Vec<u64> = logs.iter().map(|l| l.block_number).collect();
+    block_numbers.sort_unstable();
+    block_numbers.dedup();
+
+    if block_numbers.is_empty() {
+        return Ok(());
+    }
+
+    // Get an endpoint
+    let endpoint = endpoints
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No RPC endpoints available for timestamp fetching"))?;
+    let provider = endpoint.provider();
+
+    // Fetch timestamps for unique blocks
+    let mut timestamps: HashMap<u64, u64> = HashMap::new();
+
+    // Fetch blocks to get timestamps
+    for block_num in block_numbers {
+        match provider
+            .get_block_by_number(alloy::eips::BlockNumberOrTag::Number(block_num))
+            .await
+        {
+            Ok(Some(block)) => {
+                timestamps.insert(block_num, block.header.timestamp);
+            }
+            Ok(None) => {
+                // Block not found, skip
+            }
+            Err(e) => {
+                // Log error but continue
+                eprintln!("Warning: Failed to fetch block {}: {}", block_num, e);
+            }
+        }
+    }
+
+    // Update logs with timestamps
+    for log in logs.iter_mut() {
+        if let Some(&ts) = timestamps.get(&log.block_number) {
+            log.timestamp = Some(ts);
+        }
+    }
+
+    Ok(())
 }
 
 /// Run fetch in streaming mode (writes incrementally, supports resume)

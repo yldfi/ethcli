@@ -14,6 +14,9 @@ use std::collections::HashMap;
 pub struct DecodedLog {
     /// Block number
     pub block_number: u64,
+    /// Block timestamp (Unix seconds, if requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
     /// Transaction hash
     pub transaction_hash: B256,
     /// Log index within the block
@@ -269,6 +272,7 @@ impl LogDecoder {
 
         Ok(DecodedLog {
             block_number: log.block_number.unwrap_or(0),
+            timestamp: None, // Filled in later if --timestamps is used
             transaction_hash: log.transaction_hash.unwrap_or_default(),
             log_index: log.log_index.unwrap_or(0),
             address: log.address(),
