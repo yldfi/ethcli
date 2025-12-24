@@ -50,6 +50,13 @@ pub async fn handle(
     rpc_url: Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
+    // Handle namehash first - it's a pure computation, no RPC needed
+    if let EnsCommands::Namehash { name } = action {
+        let hash = namehash(name);
+        println!("{:#x}", hash);
+        return Ok(());
+    }
+
     // ENS only works on Ethereum mainnet (and some testnets)
     if chain != Chain::Ethereum {
         return Err(anyhow::anyhow!("ENS is only available on Ethereum mainnet"));
@@ -114,9 +121,9 @@ pub async fn handle(
             println!("{}", resolver.to_checksum(None));
         }
 
-        EnsCommands::Namehash { name } => {
-            let hash = namehash(name);
-            println!("{:#x}", hash);
+        EnsCommands::Namehash { .. } => {
+            // Already handled above
+            unreachable!()
         }
     }
 
