@@ -273,7 +273,8 @@ fn from_wei(value: &str, unit: &str) -> anyhow::Result<String> {
     }
 }
 
-fn abi_encode(signature: &str, args: &[String]) -> anyhow::Result<String> {
+/// Encode a function call with signature and arguments
+pub fn abi_encode(signature: &str, args: &[String]) -> anyhow::Result<String> {
     use alloy::dyn_abi::{DynSolType, DynSolValue};
 
     // Parse signature to get types
