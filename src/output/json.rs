@@ -125,6 +125,7 @@ mod tests {
     fn test_log() -> DecodedLog {
         DecodedLog {
             block_number: 12345,
+            timestamp: None,
             transaction_hash: B256::ZERO,
             log_index: 0,
             address: Address::ZERO,
