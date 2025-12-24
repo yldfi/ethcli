@@ -254,7 +254,21 @@ async fn reverse_lookup<P: Provider>(provider: &P, address: Address) -> anyhow::
         return Err(anyhow::anyhow!("No name set for address"));
     }
 
-    let name_bytes = &result[64..64 + length as usize];
+    // Bounds check: ensure length doesn't overflow and fits in result buffer
+    let length_usize =
+        usize::try_from(length).map_err(|_| anyhow::anyhow!("Invalid name length: {}", length))?;
+    let end_offset = 64usize
+        .checked_add(length_usize)
+        .ok_or_else(|| anyhow::anyhow!("Name length overflow: {}", length))?;
+    if end_offset > result.len() {
+        return Err(anyhow::anyhow!(
+            "Invalid name response: length {} exceeds buffer size {}",
+            length,
+            result.len()
+        ));
+    }
+
+    let name_bytes = &result[64..end_offset];
     let name = String::from_utf8(name_bytes.to_vec())
         .map_err(|e| anyhow::anyhow!("Invalid name encoding: {}", e))?;
 

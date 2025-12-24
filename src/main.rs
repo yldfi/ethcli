@@ -365,7 +365,7 @@ async fn run_batch_fetch_logs(
     Ok((total_logs, stats))
 }
 
-/// Fetch block timestamps and add them to logs
+/// Fetch block timestamps and add them to logs (parallel fetching)
 async fn add_timestamps_to_logs(
     logs: &mut [DecodedLog],
     endpoints: &[Endpoint],
@@ -385,26 +385,52 @@ async fn add_timestamps_to_logs(
         .ok_or_else(|| anyhow::anyhow!("No RPC endpoints available for timestamp fetching"))?;
     let provider = endpoint.provider();
 
-    // Fetch timestamps for unique blocks
+    // Fetch timestamps for unique blocks in parallel (batches of 10)
     let mut timestamps: HashMap<u64, u64> = HashMap::new();
+    let mut failed_count = 0usize;
 
-    // Fetch blocks to get timestamps
-    for block_num in block_numbers {
-        match provider
-            .get_block_by_number(alloy::eips::BlockNumberOrTag::Number(block_num))
-            .await
-        {
-            Ok(Some(block)) => {
-                timestamps.insert(block_num, block.header.timestamp);
-            }
-            Ok(None) => {
-                // Block not found, skip
-            }
-            Err(e) => {
-                // Log error but continue
-                eprintln!("Warning: Failed to fetch block {}: {}", block_num, e);
+    // Process in batches to avoid overwhelming the RPC
+    const BATCH_SIZE: usize = 10;
+    for batch in block_numbers.chunks(BATCH_SIZE) {
+        let futures: Vec<_> = batch
+            .iter()
+            .map(|&block_num| {
+                let provider = provider.clone();
+                async move {
+                    let result = provider
+                        .get_block_by_number(alloy::eips::BlockNumberOrTag::Number(block_num))
+                        .await;
+                    (block_num, result)
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        for (block_num, result) in results {
+            match result {
+                Ok(Some(block)) => {
+                    timestamps.insert(block_num, block.header.timestamp);
+                }
+                Ok(None) => {
+                    // Block not found, skip
+                    failed_count += 1;
+                }
+                Err(_) => {
+                    // Log error but continue
+                    failed_count += 1;
+                }
             }
         }
+    }
+
+    // Report failures if any
+    if failed_count > 0 {
+        eprintln!(
+            "Warning: Failed to fetch timestamps for {} of {} blocks",
+            failed_count,
+            block_numbers.len()
+        );
     }
 
     // Update logs with timestamps
@@ -424,7 +450,7 @@ async fn run_streaming_fetch(
     config: Config,
     writer: &mut Box<dyn OutputWriter>,
 ) -> anyhow::Result<(usize, FetchStats)> {
-    let mut fetcher = StreamingFetcher::new(config.clone()).await?;
+    let fetcher = StreamingFetcher::new(config.clone()).await?;
 
     // Enable checkpointing if path specified or use default
     let checkpoint_path = args.checkpoint.clone().unwrap_or_else(|| {
@@ -434,7 +460,14 @@ async fn run_streaming_fetch(
         ))
     });
 
-    fetcher = fetcher.with_checkpoint(&checkpoint_path)?;
+    // Get an endpoint for timestamp fetching before moving the fetcher
+    let endpoint_for_timestamps = if args.timestamps {
+        Some(fetcher.pool().select_archive_endpoints(1))
+    } else {
+        None
+    };
+
+    let mut fetcher = fetcher.with_checkpoint(&checkpoint_path)?;
 
     if !cli.quiet {
         eprintln!(
@@ -442,6 +475,9 @@ async fn run_streaming_fetch(
             fetcher.endpoint_count()
         );
         eprintln!("Checkpoint: {}", checkpoint_path.display());
+        if args.timestamps {
+            eprintln!("Timestamps: enabled (fetching per batch)");
+        }
     }
 
     // Set up progress (simplified for streaming)
@@ -462,7 +498,21 @@ async fn run_streaming_fetch(
 
     // Stream logs and write incrementally
     let stats = fetcher
-        .fetch_streaming(|result| {
+        .fetch_streaming(|mut result| {
+            // Add timestamps if requested
+            if let Some(ref endpoints) = endpoint_for_timestamps {
+                if let FetchLogs::Decoded(ref mut logs) = result.logs {
+                    // We need to block on the async timestamp fetch
+                    // This is safe because we're already in an async context
+                    let rt = tokio::runtime::Handle::current();
+                    rt.block_on(async {
+                        if let Err(e) = add_timestamps_to_logs(logs, endpoints).await {
+                            eprintln!("Warning: Failed to fetch timestamps: {}", e);
+                        }
+                    });
+                }
+            }
+
             total_logs += result.len();
 
             if let Some(ref pb) = pb {
