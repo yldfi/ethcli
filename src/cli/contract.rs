@@ -137,12 +137,12 @@ pub async fn handle(
 
                 for item in &items {
                     // Sanitize contract name to prevent path traversal attacks
-                    // Remove any path separators and dangerous characters, limit length
+                    // Use ASCII only to ensure 1 byte per char (251 + ".sol" = 255 bytes max)
                     let safe_name: String = item
                         .contract_name
                         .chars()
-                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                        .take(251) // Max 251 chars + ".sol" = 255 (filesystem limit)
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                        .take(251) // Max 251 bytes + ".sol" = 255 (filesystem limit)
                         .collect();
 
                     if safe_name.is_empty() {
