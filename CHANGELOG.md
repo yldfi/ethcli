@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/michaeldim/ethcli/compare/v0.7.0...v0.8.0) (2025-12-24)
+
+
+### Features
+
+* **contract:** add contract call with auto-ABI fetch ([75ce4cb](https://github.com/michaeldim/ethcli/commit/75ce4cb8db61643cb5805b09c083f31862df2dbd))
+* **logs:** add --timestamps flag to include block timestamps ([a371faa](https://github.com/michaeldim/ethcli/commit/a371faa7a5dc14b2481fd90c1e0a4791c17a98fe))
+
+
+### Bug Fixes
+
+* add filename length limit and Windows reserved name check ([e84c3d8](https://github.com/michaeldim/ethcli/commit/e84c3d8cf892119508789bd416a4c3d8444a12ea))
+* address critical issues from second code review ([0559ffd](https://github.com/michaeldim/ethcli/commit/0559ffd0197eacb07f9b094f067edde072bf93f0))
+* address security and performance issues from code review ([5feb14e](https://github.com/michaeldim/ethcli/commit/5feb14ee6491d6a00b595e3ff71ed40d2e4bb93e))
+* use ASCII-only chars in filename sanitization ([80405a8](https://github.com/michaeldim/ethcli/commit/80405a81bbea09552c2e0b4b7e59340f41bdf748))
+
 ## [0.7.0](https://github.com/michaeldim/ethcli/compare/v0.6.0...v0.7.0) (2025-12-24)
 
 
