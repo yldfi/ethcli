@@ -4,9 +4,61 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
+use tempfile::TempDir;
 
 fn ethcli() -> Command {
     Command::cargo_bin("ethcli").unwrap()
+}
+
+/// Create a temp config directory with a minimal config file
+/// Returns the temp dir (must be kept alive for the duration of the test)
+fn setup_temp_config() -> TempDir {
+    let temp_dir = TempDir::new().unwrap();
+
+    let config_content = r#"
+[settings]
+concurrency = 5
+timeout_seconds = 30
+
+[[endpoints]]
+url = "https://eth.example.com/rpc"
+max_block_range = 100000
+max_logs = 10000
+priority = 10
+enabled = true
+chain = "ethereum"
+node_type = "archive"
+has_debug = true
+has_trace = false
+
+[[endpoints]]
+url = "https://polygon.example.com/rpc"
+max_block_range = 50000
+priority = 8
+enabled = true
+chain = "polygon"
+node_type = "full"
+has_debug = false
+has_trace = true
+
+[[endpoints]]
+url = "https://disabled.example.com/rpc"
+max_block_range = 10000
+priority = 5
+enabled = false
+chain = "ethereum"
+"#;
+
+    fs::write(temp_dir.path().join("config.toml"), config_content).unwrap();
+    temp_dir
+}
+
+/// Create ethcli command with temp config directory
+fn ethcli_with_config(temp_dir: &TempDir) -> Command {
+    let mut cmd = Command::cargo_bin("ethcli").unwrap();
+    cmd.env("ETHCLI_CONFIG_DIR", temp_dir.path());
+    cmd
 }
 
 // ==================== Basic CLI tests ====================
@@ -326,4 +378,198 @@ fn test_cast_abi_encode_with_args() {
         .assert()
         .success()
         .stdout(predicate::str::contains("0xa9059cbb"));
+}
+
+// ==================== Endpoints CLI tests ====================
+
+#[test]
+fn test_endpoints_help() {
+    ethcli()
+        .args(["endpoints", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Manage RPC endpoints"))
+        .stdout(predicate::str::contains("list"))
+        .stdout(predicate::str::contains("add"))
+        .stdout(predicate::str::contains("remove"))
+        .stdout(predicate::str::contains("optimize"));
+}
+
+#[test]
+fn test_endpoints_list_help() {
+    ethcli()
+        .args(["endpoints", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("List all configured endpoints"))
+        .stdout(predicate::str::contains("--archive"))
+        .stdout(predicate::str::contains("--debug"))
+        .stdout(predicate::str::contains("--chain"));
+}
+
+#[test]
+fn test_endpoints_add_help() {
+    ethcli()
+        .args(["endpoints", "add", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Add a new RPC endpoint"));
+}
+
+#[test]
+fn test_endpoints_remove_help() {
+    ethcli()
+        .args(["endpoints", "remove", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Remove an RPC endpoint"));
+}
+
+#[test]
+fn test_endpoints_optimize_help() {
+    ethcli()
+        .args(["endpoints", "optimize", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Optimize endpoint"));
+}
+
+#[test]
+fn test_endpoints_list_with_temp_config() {
+    let temp_dir = setup_temp_config();
+
+    // Default list shows ethereum endpoints (default chain)
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://eth.example.com/rpc"))
+        .stdout(predicate::str::contains("ETHEREUM"));
+}
+
+#[test]
+fn test_endpoints_list_filter_by_chain() {
+    let temp_dir = setup_temp_config();
+
+    // Filter for ethereum - should show eth endpoint
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "list", "--chain", "ethereum"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://eth.example.com/rpc"));
+
+    // Filter for polygon - should show polygon endpoint
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "list", "--chain", "polygon"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://polygon.example.com/rpc"));
+}
+
+#[test]
+fn test_endpoints_list_filter_archive() {
+    let temp_dir = setup_temp_config();
+
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "list", "--archive"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://eth.example.com/rpc"));
+}
+
+#[test]
+fn test_endpoints_list_filter_debug() {
+    let temp_dir = setup_temp_config();
+
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "list", "--debug"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://eth.example.com/rpc"));
+}
+
+#[test]
+fn test_endpoints_list_detailed() {
+    let temp_dir = setup_temp_config();
+
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "list", "--detailed"])
+        .assert()
+        .success()
+        // Detailed view shows block range info
+        .stdout(predicate::str::contains("Block range"))
+        .stdout(predicate::str::contains("100,000"));
+}
+
+#[test]
+fn test_endpoints_enable_disable() {
+    let temp_dir = setup_temp_config();
+
+    // Disable an endpoint
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "disable", "https://eth.example.com/rpc"])
+        .assert()
+        .success();
+
+    // Verify it's disabled by checking the config file
+    let config_path = temp_dir.path().join("config.toml");
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    // After disable, the endpoint should have enabled = false
+    assert!(config_content.contains("enabled = false"));
+
+    // Re-enable it
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "enable", "https://eth.example.com/rpc"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_endpoints_remove() {
+    let temp_dir = setup_temp_config();
+
+    // Remove an endpoint
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "remove", "https://polygon.example.com/rpc"])
+        .assert()
+        .success();
+
+    // Verify it's removed
+    let config_path = temp_dir.path().join("config.toml");
+    let config_content = fs::read_to_string(&config_path).unwrap();
+    assert!(!config_content.contains("https://polygon.example.com/rpc"));
+}
+
+#[test]
+fn test_endpoints_remove_nonexistent() {
+    let temp_dir = setup_temp_config();
+
+    // Try to remove a nonexistent endpoint - returns success with message
+    ethcli_with_config(&temp_dir)
+        .args(["endpoints", "remove", "https://nonexistent.example.com/rpc"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not found"));
+}
+
+// ==================== Config CLI tests ====================
+
+#[test]
+fn test_config_help() {
+    ethcli()
+        .args(["config", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Manage configuration"));
+}
+
+#[test]
+fn test_config_path() {
+    let temp_dir = setup_temp_config();
+
+    ethcli_with_config(&temp_dir)
+        .args(["config", "path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config.toml"));
 }

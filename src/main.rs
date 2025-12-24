@@ -9,14 +9,28 @@ use ethcli::cli::{
     Cli, Commands,
 };
 use ethcli::{
-    default_endpoints, format_analysis, Chain, Config, ConfigFile, Endpoint, EndpointConfig,
-    FetchProgress, FetchStats, LogFetcher, OutputFormat, OutputWriter, ProxyConfig, RpcConfig,
-    RpcPool, StreamingFetcher, TxAnalyzer,
+    format_analysis, Chain, Config, ConfigFile, Endpoint, EndpointConfig, FetchProgress,
+    FetchStats, LogFetcher, OutputFormat, OutputWriter, ProxyConfig, RpcConfig, RpcPool,
+    StreamingFetcher, TxAnalyzer,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+/// Load config file with proper error reporting
+///
+/// Returns None if file doesn't exist, but warns on parse errors
+fn load_config_with_warning() -> Option<ConfigFile> {
+    match ConfigFile::load_default() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Warning: Failed to load config file: {}", e);
+            eprintln!("Using default settings. Fix the config or run: ethcli config path");
+            None
+        }
+    }
+}
 
 /// Format a number with thousands separators
 fn format_thousands(n: u64) -> String {
@@ -121,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Ens { action, rpc_url } => {
             return ethcli::cli::ens::handle(action, chain, rpc_url.clone(), cli.quiet).await;
         }
+        Commands::Simulate { action } => {
+            return ethcli::cli::simulate::handle(action, chain, cli.quiet).await;
+        }
     }
 }
 
@@ -142,7 +159,7 @@ async fn run_logs(args: &LogsArgs, cli: &Cli) -> anyhow::Result<()> {
     };
 
     // Load config file for additional settings
-    let config_file = ConfigFile::load_default().ok().flatten();
+    let config_file = load_config_with_warning();
 
     // Get Etherscan API key
     let etherscan_key = cli.etherscan_key.clone().or_else(|| {
@@ -159,9 +176,14 @@ async fn run_logs(args: &LogsArgs, cli: &Cli) -> anyhow::Result<()> {
             .unwrap_or(5)
     });
 
-    // Build RPC config
-    let rpc_config =
-        build_rpc_config_from_logs_args(&args.rpc, &args.proxy, &config_file, concurrency)?;
+    // Build RPC config (with optional chunk_size override)
+    let rpc_config = build_rpc_config_from_logs_args_full(
+        &args.rpc,
+        &args.proxy,
+        &config_file,
+        concurrency,
+        args.chunk_size,
+    )?;
 
     // Parse from_block (can be number, "auto", or omitted for auto-detect)
     let (from_block, auto_from_block) = match &args.from_block {
@@ -473,6 +495,19 @@ fn build_rpc_config_from_logs_args(
     Ok(rpc_config)
 }
 
+/// Build RPC config from LogsArgs with chunk_size support
+fn build_rpc_config_from_logs_args_full(
+    rpc: &RpcArgs,
+    proxy: &ProxyArgs,
+    config_file: &Option<ConfigFile>,
+    concurrency: usize,
+    chunk_size: Option<u64>,
+) -> anyhow::Result<RpcConfig> {
+    let mut rpc_config = build_rpc_config_from_logs_args(rpc, proxy, config_file, concurrency)?;
+    rpc_config.chunk_size = chunk_size;
+    Ok(rpc_config)
+}
+
 /// Build default RPC config (for tx command that doesn't have RPC args)
 fn build_default_rpc_config(config_file: &Option<ConfigFile>) -> anyhow::Result<RpcConfig> {
     let mut rpc_config = RpcConfig::default();
@@ -505,48 +540,277 @@ fn build_default_rpc_config(config_file: &Option<ConfigFile>) -> anyhow::Result<
 }
 
 async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Result<()> {
+    use ethcli::{optimize_endpoint, NodeType};
+
     match action {
-        EndpointCommands::List => {
-            let chain: Chain = cli.chain.parse()?;
-            let endpoints = default_endpoints(chain);
+        EndpointCommands::List {
+            archive,
+            debug,
+            chain: chain_filter,
+            detailed,
+        } => {
+            // Load endpoints from config file
+            let config_file = load_config_with_warning();
+            let endpoints: Vec<EndpointConfig> =
+                config_file.map(|cf| cf.endpoints).unwrap_or_default();
 
-            println!(
-                "RPC ENDPOINTS for {} ({} default)\n",
-                chain.display_name(),
-                endpoints.len()
-            );
+            // Filter by chain if specified
+            let chain_filter_parsed: Option<Chain> =
+                chain_filter.as_ref().map(|c| c.parse()).transpose()?;
 
-            // Group by priority
-            let mut by_priority: std::collections::BTreeMap<u8, Vec<_>> =
-                std::collections::BTreeMap::new();
-            for ep in &endpoints {
-                by_priority.entry(ep.priority).or_default().push(ep);
+            let filtered: Vec<_> = endpoints
+                .iter()
+                .filter(|ep| {
+                    // Filter by chain
+                    if let Some(ref chain) = chain_filter_parsed {
+                        if ep.chain != *chain {
+                            return false;
+                        }
+                    }
+                    // Filter by archive
+                    if *archive && ep.node_type != NodeType::Archive {
+                        return false;
+                    }
+                    // Filter by debug
+                    if *debug && !ep.has_debug {
+                        return false;
+                    }
+                    // Only enabled endpoints
+                    ep.enabled
+                })
+                .collect();
+
+            if filtered.is_empty() {
+                println!("No endpoints found matching filters.");
+                return Ok(());
             }
 
-            for (priority, eps) in by_priority.into_iter().rev() {
-                println!("Priority {}:", priority);
+            println!(
+                "RPC ENDPOINTS ({} total, {} shown)\n",
+                endpoints.len(),
+                filtered.len()
+            );
+
+            // Group by chain
+            let mut by_chain: std::collections::BTreeMap<String, Vec<_>> =
+                std::collections::BTreeMap::new();
+            for ep in &filtered {
+                by_chain
+                    .entry(ep.chain.name().to_string())
+                    .or_default()
+                    .push(*ep);
+            }
+
+            for (chain_name, mut eps) in by_chain {
+                // Sort by priority descending
+                eps.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+                println!("=== {} ({}) ===", chain_name.to_uppercase(), eps.len());
                 for ep in eps {
-                    println!("  {} ", ep.url);
+                    let node_type_badge = match ep.node_type {
+                        NodeType::Archive => "[ARCHIVE]",
+                        NodeType::Full => "[FULL]",
+                        NodeType::Unknown => "[?]",
+                    };
+                    let debug_badge = if ep.has_debug { "[DEBUG]" } else { "" };
+
                     println!(
-                        "    Block range: {:>10} | Max logs: {:>7}{}",
-                        if ep.max_block_range == 0 {
-                            "unlimited".to_string()
-                        } else {
-                            format_thousands(ep.max_block_range)
-                        },
-                        if ep.max_logs == 0 {
-                            "unlimited".to_string()
-                        } else {
-                            format_thousands(ep.max_logs as u64)
-                        },
-                        ep.note
-                            .as_ref()
-                            .map(|n| format!(" ({})", n))
-                            .unwrap_or_default()
+                        "  P{} {} {} {}",
+                        ep.priority, node_type_badge, debug_badge, ep.url
                     );
+
+                    if *detailed {
+                        println!(
+                            "      Block range: {} | Max logs: {}",
+                            if ep.max_block_range == 0 {
+                                "unlimited".to_string()
+                            } else {
+                                format_thousands(ep.max_block_range)
+                            },
+                            if ep.max_logs == 0 {
+                                "unlimited".to_string()
+                            } else {
+                                format_thousands(ep.max_logs as u64)
+                            }
+                        );
+                        if let Some(note) = &ep.note {
+                            println!("      Note: {}", note);
+                        }
+                        if let Some(tested) = &ep.last_tested {
+                            println!("      Last tested: {}", tested);
+                        }
+                    }
                 }
                 println!();
             }
+        }
+
+        EndpointCommands::Add {
+            url,
+            chain: chain_override,
+            no_optimize,
+        } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+
+            // Check if already exists
+            if config.endpoints.iter().any(|e| e.url == *url) {
+                println!("Endpoint already exists: {}", url);
+                return Ok(());
+            }
+
+            let endpoint = if *no_optimize {
+                // Just add with defaults
+                let chain: Chain = if let Some(c) = chain_override {
+                    c.parse()?
+                } else {
+                    cli.chain.parse()?
+                };
+                EndpointConfig::new(url).with_chain(chain)
+            } else {
+                // Optimize to detect capabilities
+                println!("Optimizing endpoint: {}\n", url);
+
+                let expected_chain: Option<Chain> =
+                    chain_override.as_ref().map(|c| c.parse()).transpose()?;
+
+                let result = optimize_endpoint(url, expected_chain, 10).await?;
+
+                if !result.connectivity_ok {
+                    println!(
+                        "Failed to connect: {}",
+                        result.error.unwrap_or_else(|| "Unknown error".to_string())
+                    );
+                    return Ok(());
+                }
+
+                println!(
+                    "  Chain: {} (ID: {})",
+                    result.config.chain.name(),
+                    result.chain_id
+                );
+                println!("  Current block: {}", result.current_block);
+                println!("  Node type: {}", result.config.node_type);
+                println!(
+                    "  Debug namespace: {}",
+                    if result.config.has_debug { "Yes" } else { "No" }
+                );
+                println!(
+                    "  Max block range: {}",
+                    format_thousands(result.config.max_block_range)
+                );
+                println!(
+                    "  Max logs: {}",
+                    format_thousands(result.config.max_logs as u64)
+                );
+
+                result.config
+            };
+
+            config.endpoints.push(endpoint);
+            config.save_default()?;
+            println!("\nEndpoint added to config.");
+        }
+
+        EndpointCommands::Remove { url } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+
+            let initial_len = config.endpoints.len();
+            config.endpoints.retain(|e| e.url != *url);
+
+            if config.endpoints.len() == initial_len {
+                println!("Endpoint not found: {}", url);
+                return Ok(());
+            }
+
+            config.save_default()?;
+            println!("Endpoint removed from config: {}", url);
+        }
+
+        EndpointCommands::Optimize {
+            url,
+            all,
+            chain: chain_filter,
+            timeout,
+        } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+
+            let chain_filter_parsed: Option<Chain> =
+                chain_filter.as_ref().map(|c| c.parse()).transpose()?;
+
+            let indices_to_optimize: Vec<usize> = if let Some(target_url) = url {
+                // Find specific endpoint
+                config
+                    .endpoints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.url == *target_url)
+                    .map(|(i, _)| i)
+                    .collect()
+            } else if *all {
+                // All endpoints, optionally filtered by chain
+                config
+                    .endpoints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
+                        if let Some(ref chain) = chain_filter_parsed {
+                            e.chain == *chain
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            } else {
+                println!("Specify a URL or use --all to optimize all endpoints.");
+                return Ok(());
+            };
+
+            if indices_to_optimize.is_empty() {
+                println!("No endpoints found to optimize.");
+                return Ok(());
+            }
+
+            println!("Optimizing {} endpoint(s)...\n", indices_to_optimize.len());
+
+            for idx in indices_to_optimize {
+                let ep_url = config.endpoints[idx].url.clone();
+                let expected_chain = Some(config.endpoints[idx].chain);
+
+                print!("Testing {}... ", ep_url);
+                std::io::Write::flush(&mut std::io::stdout())?;
+
+                match optimize_endpoint(&ep_url, expected_chain, *timeout).await {
+                    Ok(result) => {
+                        if result.connectivity_ok {
+                            println!("OK");
+                            println!(
+                                "  {} | {} | range:{} | logs:{}",
+                                result.config.node_type,
+                                if result.config.has_debug {
+                                    "debug"
+                                } else {
+                                    "no-debug"
+                                },
+                                format_thousands(result.config.max_block_range),
+                                format_thousands(result.config.max_logs as u64)
+                            );
+                            config.endpoints[idx] = result.config;
+                        } else {
+                            println!(
+                                "FAILED: {}",
+                                result.error.unwrap_or_else(|| "Unknown".to_string())
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("ERROR: {}", e);
+                    }
+                }
+            }
+
+            config.save_default()?;
+            println!("\nConfig updated.");
         }
 
         EndpointCommands::Test { url } => {
@@ -565,11 +829,11 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
             let chain: Chain = cli.chain.parse()?;
             let pool = match RpcPool::new(chain, &rpc_config) {
                 Ok(p) => {
-                    println!("✓ OK");
+                    println!("OK");
                     p
                 }
                 Err(e) => {
-                    println!("✗ FAILED: {}", e);
+                    println!("FAILED: {}", e);
                     return Ok(());
                 }
             };
@@ -579,9 +843,9 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
             std::io::Write::flush(&mut std::io::stdout())?;
 
             match pool.get_block_number().await {
-                Ok(block) => println!("✓ Block {}", block),
+                Ok(block) => println!("Block {}", block),
                 Err(e) => {
-                    println!("✗ FAILED: {}", e);
+                    println!("FAILED: {}", e);
                     return Ok(());
                 }
             }
@@ -594,12 +858,36 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
             let endpoint = Endpoint::new(EndpointConfig::new(url), 10, None)?;
 
             match endpoint.test_archive_support().await {
-                Ok(true) => println!("✓ OK (historical state accessible)"),
-                Ok(false) => println!("✗ NO (pruned node)"),
-                Err(e) => println!("? UNKNOWN: {}", e),
+                Ok(true) => println!("YES (historical state accessible)"),
+                Ok(false) => println!("NO (pruned node)"),
+                Err(e) => println!("UNKNOWN: {}", e),
             }
 
             println!("\nEndpoint test complete.");
+        }
+
+        EndpointCommands::Enable { url } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+
+            if let Some(ep) = config.endpoints.iter_mut().find(|e| e.url == *url) {
+                ep.enabled = true;
+                config.save_default()?;
+                println!("Endpoint enabled: {}", url);
+            } else {
+                println!("Endpoint not found: {}", url);
+            }
+        }
+
+        EndpointCommands::Disable { url } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+
+            if let Some(ep) = config.endpoints.iter_mut().find(|e| e.url == *url) {
+                ep.enabled = false;
+                config.save_default()?;
+                println!("Endpoint disabled: {}", url);
+            } else {
+                println!("Endpoint not found: {}", url);
+            }
         }
     }
 
@@ -618,6 +906,31 @@ async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
             println!("Etherscan API key saved to config file.");
         }
 
+        ConfigCommands::SetTenderly {
+            key,
+            account,
+            project,
+        } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+            config.set_tenderly(key.clone(), account.clone(), project.clone())?;
+            println!("Tenderly credentials saved to config file.");
+            println!("  Account: {}", account);
+            println!("  Project: {}", project);
+        }
+
+        ConfigCommands::AddDebugRpc { url } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+            config.add_debug_rpc(url.clone())?;
+            println!("Debug RPC URL added to config file.");
+            println!("  URL: {}", url);
+        }
+
+        ConfigCommands::RemoveDebugRpc { url } => {
+            let mut config = ConfigFile::load_default()?.unwrap_or_default();
+            config.remove_debug_rpc(url)?;
+            println!("Debug RPC URL removed from config file.");
+        }
+
         ConfigCommands::Show => {
             let path = ConfigFile::default_path();
             if path.exists() {
@@ -628,6 +941,10 @@ async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
                 println!("No config file found at: {}", path.display());
                 println!("\nCreate one with:");
                 println!("  ethcli config set-etherscan-key YOUR_KEY");
+                println!(
+                    "  ethcli config set-tenderly --key KEY --account ACCOUNT --project PROJECT"
+                );
+                println!("  ethcli config add-debug-rpc URL");
             }
         }
     }
@@ -677,7 +994,7 @@ async fn handle_tx(args: &TxArgs, cli: &Cli) -> anyhow::Result<()> {
     let chain: Chain = cli.chain.parse()?;
 
     // Load config file for additional settings
-    let config_file = ConfigFile::load_default().ok().flatten();
+    let config_file = load_config_with_warning();
 
     // Build RPC config with defaults
     let rpc_config = build_default_rpc_config(&config_file)?;
@@ -699,7 +1016,7 @@ async fn handle_tx(args: &TxArgs, cli: &Cli) -> anyhow::Result<()> {
     }
 
     // Create analyzer
-    let analyzer = std::sync::Arc::new(TxAnalyzer::new(pool, chain));
+    let analyzer = std::sync::Arc::new(TxAnalyzer::new(pool, chain)?);
 
     let start = Instant::now();
     let mut all_analyses = Vec::new();

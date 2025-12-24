@@ -76,7 +76,7 @@ pub enum RpcError {
     #[error("All endpoints failed for request")]
     AllEndpointsFailed,
 
-    #[error("No healthy endpoints available")]
+    #[error("No endpoints configured. Add endpoints with: ethcli endpoints add <url>")]
     NoHealthyEndpoints,
 
     #[error("Request timeout after {0}ms")]

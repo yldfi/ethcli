@@ -2,7 +2,7 @@
 //!
 //! Resolve ENS names to addresses and vice versa
 
-use crate::config::{Chain, EndpointConfig};
+use crate::config::{Chain, ConfigFile, EndpointConfig};
 use crate::rpc::Endpoint;
 use alloy::primitives::{keccak256, Address, B256};
 use alloy::providers::Provider;
@@ -59,14 +59,24 @@ pub async fn handle(
     let endpoint = if let Some(url) = rpc_url {
         Endpoint::new(EndpointConfig::new(url), 30, None)?
     } else {
-        let defaults = crate::rpc::default_endpoints(chain);
-        if defaults.is_empty() {
+        // Use config endpoints
+        let config = ConfigFile::load_default()
+            .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?
+            .unwrap_or_default();
+
+        let chain_endpoints: Vec<_> = config
+            .endpoints
+            .into_iter()
+            .filter(|e| e.enabled && e.chain == chain)
+            .collect();
+
+        if chain_endpoints.is_empty() {
             return Err(anyhow::anyhow!(
-                "No default RPC endpoints for {}",
+                "No RPC endpoints configured for {}. Add one with: ethcli endpoints add <url>",
                 chain.display_name()
             ));
         }
-        Endpoint::new(defaults[0].clone(), 30, None)?
+        Endpoint::new(chain_endpoints[0].clone(), 30, None)?
     };
 
     let provider = endpoint.provider();

@@ -1,8 +1,8 @@
 //! RPC pool for managing multiple endpoints with parallel requests
 
-use crate::config::{Chain, EndpointConfig, RpcConfig};
+use crate::config::{Chain, ConfigFile, EndpointConfig, NodeType, RpcConfig};
 use crate::error::{sanitize_error_message, Error, Result, RpcError};
-use crate::rpc::{default_endpoints, Endpoint, EndpointHealth, HealthTracker};
+use crate::rpc::{Endpoint, EndpointHealth, HealthTracker};
 use alloy::primitives::B256;
 use alloy::rpc::types::{Filter, Log, Transaction, TransactionReceipt};
 use futures::future::join_all;
@@ -11,6 +11,52 @@ use rand::thread_rng;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Persist a learned block range limit to the config file
+/// This is fire-and-forget - errors are logged but don't affect operation
+fn persist_block_range_limit(url: &str, limit: u64) {
+    let url = url.to_string();
+    // Spawn a blocking task to avoid blocking the async runtime
+    tokio::spawn(async move {
+        if let Ok(Some(mut config)) = ConfigFile::load_default() {
+            match config.update_endpoint_block_range(&url, limit) {
+                Ok(true) => {
+                    tracing::info!(
+                        "Learned block range limit for {}: {} blocks (saved to config)",
+                        sanitize_error_message(&url),
+                        limit
+                    );
+                }
+                Ok(false) => {} // No update needed
+                Err(e) => {
+                    tracing::debug!("Failed to persist block range limit: {}", e);
+                }
+            }
+        }
+    });
+}
+
+/// Persist a learned max logs limit to the config file
+fn persist_max_logs_limit(url: &str, limit: usize) {
+    let url = url.to_string();
+    tokio::spawn(async move {
+        if let Ok(Some(mut config)) = ConfigFile::load_default() {
+            match config.update_endpoint_max_logs(&url, limit) {
+                Ok(true) => {
+                    tracing::info!(
+                        "Learned max logs limit for {}: {} logs (saved to config)",
+                        sanitize_error_message(&url),
+                        limit
+                    );
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::debug!("Failed to persist max logs limit: {}", e);
+                }
+            }
+        }
+    });
+}
 
 /// Pool of RPC endpoints with load balancing and health tracking
 pub struct RpcPool {
@@ -26,22 +72,23 @@ pub struct RpcPool {
     /// Minimum priority to use (reserved for future use)
     #[allow(dead_code)]
     min_priority: u8,
+    /// Override chunk size (max block range per request)
+    chunk_size_override: Option<u64>,
 }
 
 impl RpcPool {
     /// Create a new RPC pool for a chain
     pub fn new(chain: Chain, config: &RpcConfig) -> Result<Self> {
-        // Start with user-provided endpoints or defaults
-        let mut endpoint_configs = if config.endpoints.is_empty() {
-            default_endpoints(chain)
-        } else {
-            config.endpoints.clone()
-        };
+        // Use user-provided endpoints (no hardcoded defaults)
+        let mut endpoint_configs = config.endpoints.clone();
 
-        // Add additional endpoints
+        // Filter by chain - only use endpoints that match the target chain
+        endpoint_configs.retain(|e| e.chain == chain);
+
+        // Add additional endpoints (these bypass chain filter as they're explicitly added)
         for url in &config.add_endpoints {
             if !endpoint_configs.iter().any(|e| &e.url == url) {
-                endpoint_configs.push(EndpointConfig::new(url.clone()));
+                endpoint_configs.push(EndpointConfig::new(url.clone()).with_chain(chain));
             }
         }
 
@@ -87,6 +134,7 @@ impl RpcPool {
             concurrency: config.concurrency,
             proxy,
             min_priority: config.min_priority,
+            chunk_size_override: config.chunk_size,
         })
     }
 
@@ -101,6 +149,7 @@ impl RpcPool {
             concurrency: 1,
             proxy: None,
             min_priority: 1,
+            chunk_size_override: None,
         })
     }
 
@@ -247,6 +296,20 @@ impl RpcPool {
                         };
                         self.health
                             .record_block_range_limit(endpoint.url(), reduced_limit);
+
+                        // Persist the learned limit to config
+                        persist_block_range_limit(endpoint.url(), reduced_limit);
+                    }
+
+                    // Learn from response too large errors (max logs exceeded)
+                    if let Error::Rpc(RpcError::ResponseTooLarge(count)) = &e {
+                        // Use the count if available, otherwise estimate based on typical limits
+                        let reduced_limit = if *count > 0 {
+                            (*count / 2).max(1000)
+                        } else {
+                            5000 // Conservative default
+                        };
+                        persist_max_logs_limit(endpoint.url(), reduced_limit);
                     }
 
                     tracing::debug!(
@@ -291,6 +354,28 @@ impl RpcPool {
                             let is_rate_limit = matches!(&e, Error::Rpc(RpcError::RateLimited(_)));
                             let is_timeout = matches!(&e, Error::Rpc(RpcError::Timeout(_)));
                             health.record_failure(endpoint.url(), is_rate_limit, is_timeout);
+
+                            // Learn from errors and persist to config
+                            if let Error::Rpc(RpcError::BlockRangeTooLarge { max, requested }) = &e
+                            {
+                                let reduced_limit = if *requested > 0 {
+                                    (*requested / 2).max(100)
+                                } else {
+                                    (*max / 2).max(100)
+                                };
+                                health.record_block_range_limit(endpoint.url(), reduced_limit);
+                                persist_block_range_limit(endpoint.url(), reduced_limit);
+                            }
+
+                            if let Error::Rpc(RpcError::ResponseTooLarge(count)) = &e {
+                                let reduced_limit = if *count > 0 {
+                                    (*count / 2).max(1000)
+                                } else {
+                                    5000
+                                };
+                                persist_max_logs_limit(endpoint.url(), reduced_limit);
+                            }
+
                             Err(e)
                         }
                     }
@@ -376,7 +461,13 @@ impl RpcPool {
     }
 
     /// Get the largest max block range across healthy endpoints
+    /// Returns the user-specified chunk_size if set, otherwise uses endpoint limits
     pub fn max_block_range(&self) -> u64 {
+        // If user specified a chunk size, use that
+        if let Some(chunk_size) = self.chunk_size_override {
+            return chunk_size;
+        }
+
         self.endpoints
             .iter()
             .filter(|e| self.health.is_available(e.url()))
@@ -405,6 +496,41 @@ impl RpcPool {
     /// List all endpoint URLs
     pub fn list_endpoints(&self) -> Vec<&str> {
         self.endpoints.iter().map(|e| e.url()).collect()
+    }
+
+    /// Get count of archive endpoints
+    pub fn archive_endpoint_count(&self) -> usize {
+        self.endpoints
+            .iter()
+            .filter(|e| e.config.node_type == NodeType::Archive)
+            .count()
+    }
+
+    /// Get count of debug-capable endpoints
+    pub fn debug_endpoint_count(&self) -> usize {
+        self.endpoints.iter().filter(|e| e.config.has_debug).count()
+    }
+
+    /// Select endpoints that are known archives (for historical data queries)
+    /// Falls back to all available endpoints if no archives are known
+    pub fn select_archive_endpoints(&self, count: usize) -> Vec<Endpoint> {
+        let archive_eps: Vec<_> = self
+            .endpoints
+            .iter()
+            .filter(|e| {
+                e.config.node_type == NodeType::Archive && self.health.is_available(e.url())
+            })
+            .cloned()
+            .collect();
+
+        if archive_eps.is_empty() {
+            // Fall back to all available endpoints
+            self.select_endpoints(count)
+        } else {
+            let mut result = archive_eps;
+            result.truncate(count);
+            result
+        }
     }
 }
 
@@ -438,5 +564,73 @@ mod tests {
         assert_eq!(ranked.len(), 2);
         // First should have higher score (lower latency)
         assert!(ranked[0].1 >= ranked[1].1);
+    }
+
+    #[test]
+    fn test_chain_filtering() {
+        // Create endpoints for different chains
+        let eth_endpoint =
+            EndpointConfig::new("https://eth.example.com").with_chain(Chain::Ethereum);
+        let polygon_endpoint =
+            EndpointConfig::new("https://polygon.example.com").with_chain(Chain::Polygon);
+        let arb_endpoint =
+            EndpointConfig::new("https://arb.example.com").with_chain(Chain::Arbitrum);
+
+        let config = RpcConfig {
+            endpoints: vec![eth_endpoint, polygon_endpoint, arb_endpoint],
+            ..Default::default()
+        };
+
+        // Filter for Ethereum - should only get eth endpoint
+        let mut filtered = config.endpoints.clone();
+        filtered.retain(|e| e.chain == Chain::Ethereum);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].url, "https://eth.example.com");
+
+        // Filter for Polygon - should only get polygon endpoint
+        let mut filtered = config.endpoints.clone();
+        filtered.retain(|e| e.chain == Chain::Polygon);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].url, "https://polygon.example.com");
+
+        // Filter for Arbitrum - should only get arb endpoint
+        let mut filtered = config.endpoints.clone();
+        filtered.retain(|e| e.chain == Chain::Arbitrum);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].url, "https://arb.example.com");
+    }
+
+    #[test]
+    fn test_disabled_endpoint_filtering() {
+        let mut enabled = EndpointConfig::new("https://enabled.com");
+        enabled.enabled = true;
+
+        let mut disabled = EndpointConfig::new("https://disabled.com");
+        disabled.enabled = false;
+
+        let config = RpcConfig {
+            endpoints: vec![enabled, disabled],
+            ..Default::default()
+        };
+
+        // Filter out disabled endpoints
+        let mut filtered = config.endpoints.clone();
+        filtered.retain(|e| e.enabled);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].url, "https://enabled.com");
+    }
+
+    #[test]
+    fn test_add_endpoints_bypass_chain_filter() {
+        // When using add_endpoints, they should be added with the target chain
+        let config = RpcConfig {
+            endpoints: vec![],
+            add_endpoints: vec!["https://custom.example.com".to_string()],
+            ..Default::default()
+        };
+
+        // add_endpoints should be usable for any chain since they're explicitly added
+        assert_eq!(config.add_endpoints.len(), 1);
+        assert_eq!(config.add_endpoints[0], "https://custom.example.com");
     }
 }

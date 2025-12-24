@@ -49,7 +49,7 @@ pub use abi::{AbiFetcher, DecodedLog, EventSignature, LogDecoder};
 pub use checkpoint::{Checkpoint, CheckpointManager};
 pub use config::{
     BlockNumber, BlockRange, Chain, ChainId, Config, ConfigBuilder, ConfigFile, EndpointConfig,
-    OutputConfig, OutputFormat, ProxyConfig, RpcConfig,
+    NodeType, OutputConfig, OutputFormat, ProxyConfig, RpcConfig,
 };
 pub use error::{AbiError, CheckpointError, ConfigError, Error, OutputError, Result, RpcError};
 pub use etherscan::{CacheStats, Client as EtherscanClient, SignatureCache, TokenMetadata};
@@ -58,5 +58,8 @@ pub use fetcher::{
 };
 pub use output::{create_writer, CsvWriter, JsonWriter, OutputWriter, SqliteWriter};
 pub use proxy::{validate_proxy_url, ProxyRotator, RotationMode};
-pub use rpc::{default_endpoints, Endpoint, EndpointHealth, HealthTracker, RpcPool};
+pub use rpc::{
+    optimize_endpoint, test_connectivity, Endpoint, EndpointHealth, HealthTracker,
+    OptimizationResult, RpcPool,
+};
 pub use tx::{format_analysis, TransactionAnalysis, TxAnalyzer};

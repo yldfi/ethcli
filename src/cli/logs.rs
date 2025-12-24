@@ -55,6 +55,10 @@ pub struct LogsArgs {
     #[arg(long)]
     pub strict: bool,
 
+    /// Override block range per request (chunk size)
+    #[arg(long)]
+    pub chunk_size: Option<u64>,
+
     #[command(flatten)]
     pub rpc: RpcArgs,
 

@@ -40,8 +40,31 @@ ethcli contract   # Contract operations (ABI, source, creation)
 ethcli token      # Token operations (info, holders, balance)
 ethcli gas        # Gas price oracle and estimates
 ethcli sig        # Signature lookup (function selectors, event topics)
+ethcli simulate   # Transaction simulation and tracing
+ethcli cast       # Type conversions, hashing, encoding
+ethcli rpc        # Direct RPC calls
+ethcli ens        # ENS name resolution
 ethcli endpoints  # Manage RPC endpoints
 ethcli config     # Manage configuration
+```
+
+## Simulation Commands
+
+```bash
+# Simulate a contract call (uses cast by default)
+ethcli simulate call <contract> --sig "balanceOf(address)" <address> --rpc-url https://eth.llamarpc.com
+
+# Simulate with trace (requires debug-capable node)
+ethcli simulate call <contract> --sig "transfer(address,uint256)" <to> <amount> --trace
+
+# Trace an existing transaction
+ethcli simulate tx <tx_hash> --rpc-url https://eth.llamarpc.com
+
+# Use different backends
+ethcli simulate call ... --via cast      # Default: uses cast call
+ethcli simulate call ... --via anvil     # Forks mainnet with Anvil
+ethcli simulate call ... --via tenderly  # Uses Tenderly API (rich output)
+ethcli simulate call ... --via debug     # Uses debug_traceCall RPC
 ```
 
 ## Project Structure

@@ -333,12 +333,18 @@ fn abi_decode(signature: &str, data: &str) -> anyhow::Result<String> {
     let sig = signature.trim();
     let (types_str, skip_selector) = if sig.contains('(') && !sig.starts_with('(') {
         // Function signature like "transfer(address,uint256)"
-        let types_start = sig.find('(').unwrap();
-        let types_end = sig.rfind(')').unwrap();
+        let types_start = sig
+            .find('(')
+            .ok_or_else(|| anyhow::anyhow!("Invalid signature: missing '('"))?;
+        let types_end = sig
+            .rfind(')')
+            .ok_or_else(|| anyhow::anyhow!("Invalid signature: missing ')'"))?;
         (&sig[types_start + 1..types_end], true)
     } else if sig.starts_with('(') {
         // Tuple type like "(address,uint256)"
-        let types_end = sig.rfind(')').unwrap();
+        let types_end = sig
+            .rfind(')')
+            .ok_or_else(|| anyhow::anyhow!("Invalid tuple type: missing closing ')'"))?;
         (&sig[1..types_end], false)
     } else {
         // Single type or comma-separated types

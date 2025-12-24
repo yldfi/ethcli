@@ -647,8 +647,11 @@ impl AbiFetcher {
 impl AbiFetcher {
     /// Create a new ABI fetcher with default settings (no API key)
     ///
+    /// This is a convenience method for tests only.
+    ///
     /// # Panics
     /// Panics if the HTTP client cannot be initialized (extremely rare).
+    #[cfg(test)]
     pub fn new_default() -> Self {
         Self::new(None).expect("Failed to initialize HTTP client")
     }

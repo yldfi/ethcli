@@ -27,6 +27,25 @@ pub struct ConfigFile {
     /// Etherscan API key
     #[serde(default)]
     pub etherscan_api_key: Option<String>,
+
+    /// Tenderly configuration
+    #[serde(default)]
+    pub tenderly: Option<TenderlyConfig>,
+
+    /// Debug-capable RPC endpoints (for debug_traceCall, etc.)
+    #[serde(default)]
+    pub debug_rpc_urls: Vec<String>,
+}
+
+/// Tenderly API configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenderlyConfig {
+    /// Tenderly access key
+    pub access_key: String,
+    /// Tenderly account slug
+    pub account: String,
+    /// Tenderly project slug
+    pub project: String,
 }
 
 /// Global settings
@@ -102,10 +121,16 @@ pub struct ProxyFileConfig {
 
 impl ConfigFile {
     /// Get the default config file path
+    ///
+    /// Can be overridden by setting the `ETHCLI_CONFIG_DIR` environment variable.
     pub fn default_path() -> PathBuf {
+        if let Ok(config_dir) = std::env::var("ETHCLI_CONFIG_DIR") {
+            return PathBuf::from(config_dir).join("config.toml");
+        }
+
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("eth-log-fetcher")
+            .join("ethcli")
             .join("config.toml")
     }
 
@@ -170,6 +195,113 @@ impl ConfigFile {
         self.etherscan_api_key = Some(key);
         self.save_default()
     }
+
+    /// Set Tenderly credentials and save
+    pub fn set_tenderly(
+        &mut self,
+        access_key: String,
+        account: String,
+        project: String,
+    ) -> Result<()> {
+        self.tenderly = Some(TenderlyConfig {
+            access_key,
+            account,
+            project,
+        });
+        self.save_default()
+    }
+
+    /// Add a debug RPC URL and save
+    pub fn add_debug_rpc(&mut self, url: String) -> Result<()> {
+        if !self.debug_rpc_urls.contains(&url) {
+            self.debug_rpc_urls.push(url);
+        }
+        self.save_default()
+    }
+
+    /// Remove a debug RPC URL and save
+    pub fn remove_debug_rpc(&mut self, url: &str) -> Result<()> {
+        self.debug_rpc_urls.retain(|u| u != url);
+        self.save_default()
+    }
+
+    /// Update an endpoint's max_block_range (runtime learning)
+    pub fn update_endpoint_block_range(&mut self, url: &str, max_block_range: u64) -> Result<bool> {
+        if let Some(ep) = self.endpoints.iter_mut().find(|e| e.url == url) {
+            // Only update if the new limit is lower (more restrictive)
+            if max_block_range < ep.max_block_range {
+                ep.max_block_range = max_block_range;
+                self.save_default()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Update an endpoint's max_logs (runtime learning)
+    pub fn update_endpoint_max_logs(&mut self, url: &str, max_logs: usize) -> Result<bool> {
+        if let Some(ep) = self.endpoints.iter_mut().find(|e| e.url == url) {
+            // Only update if the new limit is lower (more restrictive)
+            if max_logs < ep.max_logs {
+                ep.max_logs = max_logs;
+                self.save_default()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Disable an endpoint (runtime learning - endpoint is broken)
+    pub fn disable_endpoint(&mut self, url: &str) -> Result<bool> {
+        if let Some(ep) = self.endpoints.iter_mut().find(|e| e.url == url) {
+            if ep.enabled {
+                ep.enabled = false;
+                self.save_default()?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Update block range in memory only (for testing)
+    #[cfg(test)]
+    pub fn update_endpoint_block_range_in_memory(
+        &mut self,
+        url: &str,
+        max_block_range: u64,
+    ) -> bool {
+        if let Some(ep) = self.endpoints.iter_mut().find(|e| e.url == url) {
+            if max_block_range < ep.max_block_range {
+                ep.max_block_range = max_block_range;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Update max logs in memory only (for testing)
+    #[cfg(test)]
+    pub fn update_endpoint_max_logs_in_memory(&mut self, url: &str, max_logs: usize) -> bool {
+        if let Some(ep) = self.endpoints.iter_mut().find(|e| e.url == url) {
+            if max_logs < ep.max_logs {
+                ep.max_logs = max_logs;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Disable endpoint in memory only (for testing)
+    #[cfg(test)]
+    pub fn disable_endpoint_in_memory(&mut self, url: &str) -> bool {
+        if let Some(ep) = self.endpoints.iter_mut().find(|e| e.url == url) {
+            if ep.enabled {
+                ep.enabled = false;
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +337,240 @@ urls = ["https://disabled.com/rpc"]
     #[test]
     fn test_default_path() {
         let path = ConfigFile::default_path();
-        assert!(path.to_string_lossy().contains("eth-log-fetcher"));
+        assert!(path.to_string_lossy().contains("ethcli"));
+    }
+
+    #[test]
+    fn test_parse_config_with_new_fields() {
+        use crate::config::{Chain, NodeType};
+
+        let toml = r#"
+[[endpoints]]
+url = "https://example.com/rpc"
+max_block_range = 100000
+max_logs = 50000
+priority = 10
+node_type = "archive"
+has_debug = true
+has_trace = false
+chain = "ethereum"
+last_tested = "2024-12-24T10:00:00Z"
+
+[[endpoints]]
+url = "https://polygon.example.com/rpc"
+max_block_range = 50000
+priority = 8
+node_type = "full"
+has_debug = false
+has_trace = true
+chain = "polygon"
+"#;
+
+        let config: ConfigFile = toml::from_str(toml).unwrap();
+        assert_eq!(config.endpoints.len(), 2);
+
+        // First endpoint - Ethereum archive with debug
+        let ep1 = &config.endpoints[0];
+        assert_eq!(ep1.chain, Chain::Ethereum);
+        assert_eq!(ep1.node_type, NodeType::Archive);
+        assert!(ep1.has_debug);
+        assert!(!ep1.has_trace);
+        assert_eq!(ep1.last_tested, Some("2024-12-24T10:00:00Z".to_string()));
+
+        // Second endpoint - Polygon full node with trace
+        let ep2 = &config.endpoints[1];
+        assert_eq!(ep2.chain, Chain::Polygon);
+        assert_eq!(ep2.node_type, NodeType::Full);
+        assert!(!ep2.has_debug);
+        assert!(ep2.has_trace);
+    }
+
+    #[test]
+    fn test_runtime_learning_block_range() {
+        let mut config = ConfigFile::default();
+        config
+            .endpoints
+            .push(EndpointConfig::new("https://test.com/rpc"));
+        config.endpoints[0].max_block_range = 100000;
+
+        // Should update when new limit is lower
+        let updated = config.update_endpoint_block_range_in_memory("https://test.com/rpc", 50000);
+        assert!(updated);
+        assert_eq!(config.endpoints[0].max_block_range, 50000);
+
+        // Should NOT update when new limit is higher
+        let updated = config.update_endpoint_block_range_in_memory("https://test.com/rpc", 75000);
+        assert!(!updated);
+        assert_eq!(config.endpoints[0].max_block_range, 50000);
+
+        // Should NOT update for unknown endpoint
+        let updated = config.update_endpoint_block_range_in_memory("https://unknown.com/rpc", 1000);
+        assert!(!updated);
+    }
+
+    #[test]
+    fn test_runtime_learning_max_logs() {
+        let mut config = ConfigFile::default();
+        config
+            .endpoints
+            .push(EndpointConfig::new("https://test.com/rpc"));
+        config.endpoints[0].max_logs = 100000;
+
+        // Should update when new limit is lower
+        let updated = config.update_endpoint_max_logs_in_memory("https://test.com/rpc", 50000);
+        assert!(updated);
+        assert_eq!(config.endpoints[0].max_logs, 50000);
+
+        // Should NOT update when new limit is higher
+        let updated = config.update_endpoint_max_logs_in_memory("https://test.com/rpc", 75000);
+        assert!(!updated);
+        assert_eq!(config.endpoints[0].max_logs, 50000);
+    }
+
+    #[test]
+    fn test_disable_endpoint_in_memory() {
+        let mut config = ConfigFile::default();
+        config
+            .endpoints
+            .push(EndpointConfig::new("https://test.com/rpc"));
+        assert!(config.endpoints[0].enabled);
+
+        // Should disable
+        let disabled = config.disable_endpoint_in_memory("https://test.com/rpc");
+        assert!(disabled);
+        assert!(!config.endpoints[0].enabled);
+
+        // Should not disable again
+        let disabled = config.disable_endpoint_in_memory("https://test.com/rpc");
+        assert!(!disabled);
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = ConfigFile::load(Path::new("/nonexistent/path/config.toml"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_load_invalid_toml_syntax() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, "this is not valid { toml [syntax").unwrap();
+
+        let result = ConfigFile::load(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_invalid_field_types() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        // concurrency should be a number, not a string
+        std::fs::write(
+            &config_path,
+            r#"
+[settings]
+concurrency = "not_a_number"
+"#,
+        )
+        .unwrap();
+
+        let result = ConfigFile::load(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_invalid_enum_value() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        // "invalid_chain" is not a valid Chain variant
+        std::fs::write(
+            &config_path,
+            r#"
+[[endpoints]]
+url = "https://example.com/rpc"
+chain = "invalid_chain"
+"#,
+        )
+        .unwrap();
+
+        let result = ConfigFile::load(&config_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_empty_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        // Empty file should parse successfully with defaults
+        let result = ConfigFile::load(&config_path);
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert!(config.endpoints.is_empty());
+        assert_eq!(config.settings.concurrency, 5); // default
+    }
+
+    #[test]
+    fn test_load_partial_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        // Only specify some settings, others should use defaults
+        std::fs::write(
+            &config_path,
+            r#"
+[settings]
+concurrency = 20
+"#,
+        )
+        .unwrap();
+
+        let result = ConfigFile::load(&config_path);
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.settings.concurrency, 20);
+        assert_eq!(config.settings.timeout_seconds, 30); // default
+        assert_eq!(config.settings.retry_attempts, 3); // default
+    }
+
+    #[test]
+    fn test_save_and_load_roundtrip() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+
+        let mut config = ConfigFile::default();
+        config.etherscan_api_key = Some("test_key_123".to_string());
+        config.settings.concurrency = 15;
+        config
+            .endpoints
+            .push(EndpointConfig::new("https://test.example.com/rpc"));
+
+        // Save
+        config.save(&config_path).unwrap();
+
+        // Load and verify
+        let loaded = ConfigFile::load(&config_path).unwrap();
+        assert_eq!(loaded.etherscan_api_key, Some("test_key_123".to_string()));
+        assert_eq!(loaded.settings.concurrency, 15);
+        assert_eq!(loaded.endpoints.len(), 1);
+        assert_eq!(loaded.endpoints[0].url, "https://test.example.com/rpc");
+    }
+
+    #[test]
+    fn test_save_creates_parent_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir
+            .path()
+            .join("nested")
+            .join("dir")
+            .join("config.toml");
+
+        let config = ConfigFile::default();
+        let result = config.save(&config_path);
+        assert!(result.is_ok());
+        assert!(config_path.exists());
     }
 }
