@@ -29,12 +29,12 @@ pub struct TxAnalyzer {
 
 impl TxAnalyzer {
     /// Create a new analyzer
-    pub fn new(pool: RpcPool, chain: Chain) -> Self {
-        Self {
+    pub fn new(pool: RpcPool, chain: Chain) -> Result<Self> {
+        Ok(Self {
             pool,
             chain,
-            abi_fetcher: AbiFetcher::new_default(),
-        }
+            abi_fetcher: AbiFetcher::new(None)?,
+        })
     }
 
     /// Analyze a transaction by hash (basic analysis)

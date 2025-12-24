@@ -12,6 +12,7 @@ pub mod gas;
 pub mod logs;
 pub mod rpc;
 pub mod sig;
+pub mod simulate;
 pub mod token;
 pub mod tx;
 
@@ -147,5 +148,11 @@ pub enum Commands {
         /// Custom RPC URL (overrides default)
         #[arg(long, global = true)]
         rpc_url: Option<String>,
+    },
+
+    /// Simulate transactions and trace execution
+    Simulate {
+        #[command(subcommand)]
+        action: Box<simulate::SimulateCommands>,
     },
 }

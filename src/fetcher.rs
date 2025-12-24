@@ -3,15 +3,39 @@
 use crate::abi::{AbiFetcher, DecodedLog, EventSignature, LogDecoder};
 use crate::checkpoint::CheckpointManager;
 use crate::config::{BlockNumber, Config};
-use crate::error::{Error, Result, RpcError};
+use crate::error::{AbiError, Error, Result, RpcError};
 use crate::rpc::RpcPool;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use alloy::rpc::types::{Filter, Log};
 use futures::stream::{self, StreamExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+/// Parse event strings into topic hashes
+///
+/// Accepts either:
+/// - A topic hash (0x-prefixed, 66 chars): parsed directly
+/// - An event signature (e.g., "Transfer(address,address,uint256)"): computed via keccak256
+fn parse_event_topics(events: &[String]) -> Result<Vec<B256>> {
+    events
+        .iter()
+        .map(|event_str| {
+            // Check if it's already a topic hash
+            if event_str.starts_with("0x") && event_str.len() == 66 {
+                event_str
+                    .parse()
+                    .map_err(|_| Error::Abi(AbiError::InvalidEventSignature(event_str.clone())))
+            } else {
+                // Parse as signature and compute topic
+                EventSignature::parse(event_str)
+                    .map(|sig| sig.topic)
+                    .map_err(|_| Error::Abi(AbiError::InvalidEventSignature(event_str.clone())))
+            }
+        })
+        .collect()
+}
 
 /// Statistics about a fetch operation
 #[derive(Debug, Clone, Default)]
@@ -269,23 +293,7 @@ impl LogFetcher {
         // Add event topics if we have specific events (works in both raw and decoded modes)
         // Multiple topics create an OR filter (matches any of the specified events)
         if !self.resolved_events.is_empty() {
-            let topics: Vec<alloy::primitives::B256> = self
-                .resolved_events
-                .iter()
-                .map(|event_str| {
-                    // Check if it's already a topic hash
-                    if event_str.starts_with("0x") && event_str.len() == 66 {
-                        event_str.parse().expect("Invalid topic hash format")
-                    } else {
-                        // Parse as signature and compute topic
-                        EventSignature::parse(event_str)
-                            .map(|sig| sig.topic)
-                            .expect("Invalid event signature")
-                    }
-                })
-                .collect();
-
-            // Filter with multiple topics creates OR condition
+            let topics = parse_event_topics(&self.resolved_events)?;
             base_filter = base_filter.event_signature(topics);
         }
 
@@ -638,24 +646,7 @@ impl StreamingFetcher {
         // Add event topics if we have specific events (use resolved events for filtering)
         // Multiple topics create an OR filter (matches any of the specified events)
         if !self.fetcher.resolved_events.is_empty() {
-            let topics: Vec<alloy::primitives::B256> = self
-                .fetcher
-                .resolved_events
-                .iter()
-                .map(|event_str| {
-                    // Check if it's already a topic hash
-                    if event_str.starts_with("0x") && event_str.len() == 66 {
-                        event_str.parse().expect("Invalid topic hash format")
-                    } else {
-                        // Parse as signature and compute topic
-                        EventSignature::parse(event_str)
-                            .map(|sig| sig.topic)
-                            .expect("Invalid event signature")
-                    }
-                })
-                .collect();
-
-            // Filter with multiple topics creates OR condition
+            let topics = parse_event_topics(&self.fetcher.resolved_events)?;
             base_filter = base_filter.event_signature(topics);
         }
 
@@ -826,5 +817,64 @@ mod tests {
         };
         assert!(!stats.is_complete());
         assert!((stats.success_rate() - 80.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_event_topics_valid_signature() {
+        let events = vec!["Transfer(address,address,uint256)".to_string()];
+        let topics = parse_event_topics(&events).unwrap();
+        assert_eq!(topics.len(), 1);
+        // Transfer topic hash
+        assert_eq!(
+            format!("{:#x}", topics[0]),
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        );
+    }
+
+    #[test]
+    fn test_parse_event_topics_valid_hash() {
+        let events =
+            vec!["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef".to_string()];
+        let topics = parse_event_topics(&events).unwrap();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(
+            format!("{:#x}", topics[0]),
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        );
+    }
+
+    #[test]
+    fn test_parse_event_topics_invalid_signature() {
+        let events = vec!["InvalidSignature(".to_string()];
+        let result = parse_event_topics(&events);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid event signature"));
+    }
+
+    #[test]
+    fn test_parse_event_topics_invalid_hash() {
+        // Too short
+        let events = vec!["0x1234".to_string()];
+        let result = parse_event_topics(&events);
+        // This is treated as a signature, not a hash, so it should fail
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_event_topics_empty() {
+        let events: Vec<String> = vec![];
+        let topics = parse_event_topics(&events).unwrap();
+        assert!(topics.is_empty());
+    }
+
+    #[test]
+    fn test_parse_event_topics_multiple() {
+        let events = vec![
+            "Transfer(address,address,uint256)".to_string(),
+            "Approval(address,address,uint256)".to_string(),
+        ];
+        let topics = parse_event_topics(&events).unwrap();
+        assert_eq!(topics.len(), 2);
     }
 }

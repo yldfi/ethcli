@@ -5,8 +5,8 @@ mod endpoint;
 mod file;
 
 pub use chain::{Chain, ChainId};
-pub use endpoint::EndpointConfig;
-pub use file::ConfigFile;
+pub use endpoint::{EndpointConfig, NodeType};
+pub use file::{ConfigFile, TenderlyConfig};
 
 use crate::error::{ConfigError, Result};
 use std::path::PathBuf;
@@ -131,6 +131,8 @@ pub struct RpcConfig {
     pub concurrency: usize,
     /// Proxy configuration
     pub proxy: Option<ProxyConfig>,
+    /// Override chunk size (max block range per request)
+    pub chunk_size: Option<u64>,
 }
 
 impl Default for RpcConfig {
@@ -144,6 +146,7 @@ impl Default for RpcConfig {
             max_retries: 3,
             concurrency: 5,
             proxy: None,
+            chunk_size: None,
         }
     }
 }

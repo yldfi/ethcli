@@ -225,7 +225,17 @@ impl SqliteWriter {
             let mut stmt = tx.prepare(&sql).map_err(OutputError::Sqlite)?;
 
             for log in &logs {
-                let topics_json = serde_json::to_string(&log.topics).unwrap_or_default();
+                let topics_json = match serde_json::to_string(&log.topics) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to serialize topics for log in tx {:#x}: {}",
+                            log.transaction_hash,
+                            e
+                        );
+                        "[]".to_string()
+                    }
+                };
 
                 let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
                     Box::new(log.block_number as i64),
@@ -267,8 +277,14 @@ impl SqliteWriter {
             DecodedValue::Bool(b) => b.to_string(),
             DecodedValue::Bytes(s) => s.clone(),
             DecodedValue::String(s) => s.clone(),
-            DecodedValue::Array(arr) => serde_json::to_string(arr).unwrap_or_default(),
-            DecodedValue::Tuple(arr) => serde_json::to_string(arr).unwrap_or_default(),
+            DecodedValue::Array(arr) => serde_json::to_string(arr).unwrap_or_else(|e| {
+                tracing::warn!("Failed to serialize array value: {}", e);
+                "[serialization error]".to_string()
+            }),
+            DecodedValue::Tuple(arr) => serde_json::to_string(arr).unwrap_or_else(|e| {
+                tracing::warn!("Failed to serialize tuple value: {}", e);
+                "[serialization error]".to_string()
+            }),
         }
     }
 
@@ -397,5 +413,65 @@ mod tests {
         let sanitized1 = SqliteWriter::sanitize_column_name_basic(name1);
         let sanitized2 = SqliteWriter::sanitize_column_name_basic(name2);
         assert_eq!(sanitized1, sanitized2); // These collide
+    }
+
+    #[test]
+    fn test_value_to_string_address() {
+        let value = DecodedValue::Address("0x1234567890abcdef".to_string());
+        assert_eq!(SqliteWriter::value_to_string(&value), "0x1234567890abcdef");
+    }
+
+    #[test]
+    fn test_value_to_string_uint() {
+        let value = DecodedValue::Uint("12345678901234567890".to_string());
+        assert_eq!(
+            SqliteWriter::value_to_string(&value),
+            "12345678901234567890"
+        );
+    }
+
+    #[test]
+    fn test_value_to_string_bool() {
+        let value_true = DecodedValue::Bool(true);
+        let value_false = DecodedValue::Bool(false);
+        assert_eq!(SqliteWriter::value_to_string(&value_true), "true");
+        assert_eq!(SqliteWriter::value_to_string(&value_false), "false");
+    }
+
+    #[test]
+    fn test_value_to_string_array() {
+        let value = DecodedValue::Array(vec![
+            DecodedValue::Uint("1".to_string()),
+            DecodedValue::Uint("2".to_string()),
+        ]);
+        let result = SqliteWriter::value_to_string(&value);
+        // Should be valid JSON
+        assert!(result.starts_with('['));
+        assert!(result.contains("\"1\""));
+        assert!(result.contains("\"2\""));
+    }
+
+    #[test]
+    fn test_value_to_string_tuple() {
+        let value = DecodedValue::Tuple(vec![
+            DecodedValue::Address("0xabc".to_string()),
+            DecodedValue::Uint("123".to_string()),
+        ]);
+        let result = SqliteWriter::value_to_string(&value);
+        // Should be valid JSON
+        assert!(result.starts_with('['));
+        assert!(result.contains("0xabc"));
+    }
+
+    #[test]
+    fn test_value_to_string_nested() {
+        let value = DecodedValue::Array(vec![DecodedValue::Tuple(vec![
+            DecodedValue::Address("0x123".to_string()),
+            DecodedValue::Bool(true),
+        ])]);
+        let result = SqliteWriter::value_to_string(&value);
+        // Should be valid JSON with nested structure
+        assert!(result.contains("0x123"));
+        assert!(result.contains("true"));
     }
 }
