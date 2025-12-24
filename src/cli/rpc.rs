@@ -361,7 +361,7 @@ pub async fn handle(
     Ok(())
 }
 
-fn parse_block_id(block: &str) -> anyhow::Result<alloy::eips::BlockId> {
+pub fn parse_block_id(block: &str) -> anyhow::Result<alloy::eips::BlockId> {
     use alloy::eips::{BlockId, BlockNumberOrTag};
 
     match block.to_lowercase().as_str() {
