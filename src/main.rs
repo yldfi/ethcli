@@ -1240,6 +1240,10 @@ async fn handle_tx(args: &TxArgs, cli: &Cli) -> anyhow::Result<()> {
                     println!();
                 }
                 println!("{}", format_analysis(analysis));
+                // Add explorer link
+                if let Some(explorer) = chain.explorer_url() {
+                    println!("\nExplorer: {}/tx/{:#x}", explorer, analysis.hash);
+                }
             }
         }
     }

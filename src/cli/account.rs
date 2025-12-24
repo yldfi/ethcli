@@ -191,6 +191,10 @@ pub async fn handle(
                     );
                 } else {
                     println!("{} {}", balance_eth, chain.native_symbol());
+                    // Add explorer link
+                    if let Some(explorer) = chain.explorer_url() {
+                        println!("\nExplorer: {}/address/{:#x}", explorer, parsed[0]);
+                    }
                 }
             } else {
                 // Multiple addresses
@@ -271,6 +275,10 @@ pub async fn handle(
                 }
                 if txs.len() > 20 {
                     println!("... and {} more", txs.len() - 20);
+                }
+                // Add explorer link
+                if let Some(explorer) = chain.explorer_url() {
+                    println!("\nExplorer: {}/address/{}", explorer, address);
                 }
             }
         }

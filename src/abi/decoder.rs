@@ -90,6 +90,12 @@ struct EventInfo {
     data_types: Vec<DynSolType>,
     indexed_names: Vec<String>,
     data_names: Vec<String>,
+    /// All param types in order (for dynamic re-partitioning when indexed isn't specified)
+    all_types: Vec<DynSolType>,
+    /// All param names in order
+    all_names: Vec<String>,
+    /// Whether indexed was explicitly specified (vs inferred)
+    indexed_explicit: bool,
 }
 
 impl Default for LogDecoder {
@@ -148,9 +154,13 @@ impl LogDecoder {
         let mut indexed_names = Vec::new();
         let mut data_types = Vec::new();
         let mut data_names = Vec::new();
+        let mut all_types = Vec::new();
+        let mut all_names = Vec::new();
 
         for input in &event.inputs {
             let ty = Self::parse_type(&input.ty)?;
+            all_types.push(ty.clone());
+            all_names.push(input.name.clone());
 
             if input.indexed {
                 indexed_names.push(input.name.clone());
@@ -172,6 +182,9 @@ impl LogDecoder {
             data_types,
             indexed_names,
             data_names,
+            all_types,
+            all_names,
+            indexed_explicit: true, // ABI always has explicit indexed info
         })
     }
 
@@ -181,6 +194,9 @@ impl LogDecoder {
         let mut indexed_names = Vec::new();
         let mut data_types = Vec::new();
         let mut data_names = Vec::new();
+        let mut all_types = Vec::new();
+        let mut all_names = Vec::new();
+        let mut has_any_indexed = false;
 
         for (i, param) in sig.params.iter().enumerate() {
             let ty = Self::parse_type(&param.ty)?;
@@ -190,7 +206,11 @@ impl LogDecoder {
                 param.name.clone()
             };
 
+            all_types.push(ty.clone());
+            all_names.push(name.clone());
+
             if param.indexed {
+                has_any_indexed = true;
                 indexed_names.push(name);
                 indexed_types.push(ty);
             } else {
@@ -206,6 +226,9 @@ impl LogDecoder {
             data_types,
             indexed_names,
             data_names,
+            all_types,
+            all_names,
+            indexed_explicit: has_any_indexed, // Only explicit if user specified "indexed"
         })
     }
 
@@ -229,16 +252,42 @@ impl LogDecoder {
             .get(topic0)
             .ok_or_else(|| AbiError::EventNotFound(format!("Unknown event: {:#x}", topic0)))?;
 
-        // Decode indexed parameters (topics[1..])
+        // Number of indexed params (topics excluding topic0)
         let indexed_topics: Vec<_> = log.topics().iter().skip(1).collect();
+        let actual_indexed_count = indexed_topics.len();
+
+        // Determine indexed/data split
+        // If indexed was explicitly specified, use the stored split
+        // Otherwise, infer from the log's topic count
+        let (indexed_types, indexed_names, data_types, data_names): (
+            Vec<DynSolType>,
+            Vec<String>,
+            Vec<DynSolType>,
+            Vec<String>,
+        ) = if event_info.indexed_explicit {
+            // Use the explicitly specified split
+            (
+                event_info.indexed_types.clone(),
+                event_info.indexed_names.clone(),
+                event_info.data_types.clone(),
+                event_info.data_names.clone(),
+            )
+        } else {
+            // Infer indexed from log's topic count
+            // First N params are indexed, rest are data
+            let n = actual_indexed_count.min(event_info.all_types.len());
+            (
+                event_info.all_types[..n].to_vec(),
+                event_info.all_names[..n].to_vec(),
+                event_info.all_types[n..].to_vec(),
+                event_info.all_names[n..].to_vec(),
+            )
+        };
+
         let mut params = HashMap::new();
 
-        for (i, (ty, name)) in event_info
-            .indexed_types
-            .iter()
-            .zip(event_info.indexed_names.iter())
-            .enumerate()
-        {
+        // Decode indexed parameters (topics[1..])
+        for (i, (ty, name)) in indexed_types.iter().zip(indexed_names.iter()).enumerate() {
             if let Some(topic) = indexed_topics.get(i) {
                 let value = Self::decode_indexed(ty, topic)?;
                 params.insert(name.clone(), value);
@@ -246,25 +295,25 @@ impl LogDecoder {
         }
 
         // Decode non-indexed parameters (data)
-        if !event_info.data_types.is_empty() {
+        if !data_types.is_empty() {
             if log.data().data.is_empty() {
                 // Event expects data but none provided - log warning and use empty values
                 tracing::warn!(
                     "Event '{}' expects {} non-indexed parameters but log data is empty \
                      (block {:?}, tx {:?}). Using empty placeholder values.",
                     event_info.name,
-                    event_info.data_types.len(),
+                    data_types.len(),
                     log.block_number,
                     log.transaction_hash
                 );
                 // Insert placeholder empty values for expected params
-                for name in &event_info.data_names {
+                for name in &data_names {
                     params.insert(name.clone(), DecodedValue::String("".to_string()));
                 }
             } else {
-                let decoded = Self::decode_data(&event_info.data_types, &log.data().data)?;
+                let decoded = Self::decode_data(&data_types, &log.data().data)?;
 
-                for (name, value) in event_info.data_names.iter().zip(decoded.into_iter()) {
+                for (name, value) in data_names.iter().zip(decoded.into_iter()) {
                     params.insert(name.clone(), value);
                 }
             }
