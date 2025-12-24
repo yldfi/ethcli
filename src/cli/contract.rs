@@ -121,6 +121,12 @@ pub async fn handle(
                 // Create directory and save files
                 std::fs::create_dir_all(dir)?;
 
+                // Canonicalize directory AFTER creation (so it exists and can be resolved)
+                // This is critical for security - fail hard if we can't canonicalize
+                let canonical_dir = dir.canonicalize().map_err(|e| {
+                    anyhow::anyhow!("Failed to canonicalize output directory: {}", e)
+                })?;
+
                 // Get source items
                 let items = metadata.items;
                 if items.is_empty() {
@@ -146,20 +152,19 @@ pub async fn handle(
                         continue;
                     }
 
-                    // Save main source code using the source_code() method
+                    // Build path from canonicalized directory
                     let filename = format!("{}.sol", safe_name);
-                    let file_path = dir.join(&filename);
+                    let file_path = canonical_dir.join(&filename);
 
-                    // Double-check the final path is within the target directory
-                    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                    if let Ok(canonical_file) = file_path.canonicalize() {
-                        if !canonical_file.starts_with(&canonical_dir) {
-                            eprintln!(
-                                "  Warning: Skipping file that would escape directory: {}",
-                                item.contract_name
-                            );
-                            continue;
-                        }
+                    // Verify the constructed path is still within the target directory
+                    // Note: We check the constructed path, not canonicalize it (file doesn't exist yet)
+                    // The sanitization above should prevent ".." but this is defense in depth
+                    if !file_path.starts_with(&canonical_dir) {
+                        eprintln!(
+                            "  Warning: Skipping file that would escape directory: {}",
+                            item.contract_name
+                        );
+                        continue;
                     }
 
                     let source_code_str = item.source_code.source_code();
@@ -253,66 +258,94 @@ pub async fn handle(
             // contract_abi returns JsonAbi directly
             let json_abi = abi;
 
-            // Find the function - handle overloaded functions by matching arg count
+            // Find the function - handle overloaded functions by matching arg count and types
             let funcs = json_abi
                 .functions
                 .get(function)
                 .ok_or_else(|| anyhow::anyhow!("Function '{}' not found in ABI", function))?;
 
-            // Find the overload that matches the argument count
-            let func = if funcs.len() == 1 {
-                &funcs[0]
-            } else {
-                // Multiple overloads - find one matching arg count
-                funcs
-                    .iter()
-                    .find(|f| f.inputs.len() == args.len())
-                    .ok_or_else(|| {
-                        let overloads: Vec<String> = funcs
-                            .iter()
-                            .map(|f| {
-                                format!(
-                                    "{}({}) - {} args",
-                                    function,
-                                    f.inputs
-                                        .iter()
-                                        .map(|i| i.ty.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                    f.inputs.len()
-                                )
-                            })
-                            .collect();
-                        anyhow::anyhow!(
-                            "Function '{}' has {} overloads, none match {} args:\n  {}",
-                            function,
-                            funcs.len(),
-                            args.len(),
-                            overloads.join("\n  ")
-                        )
-                    })?
+            // Helper to format function signature for error messages
+            let format_sig = |f: &alloy::json_abi::Function| {
+                format!(
+                    "{}({})",
+                    function,
+                    f.inputs
+                        .iter()
+                        .map(|i| i.ty.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
 
-            // Validate argument count (redundant for overloaded case, but keeps non-overloaded consistent)
-            if func.inputs.len() != args.len() {
-                return Err(anyhow::anyhow!(
-                    "Function '{}' expects {} arguments, got {}",
-                    function,
-                    func.inputs.len(),
-                    args.len()
-                ));
-            }
+            // Helper to try coercing arguments for a function
+            let try_coerce = |f: &alloy::json_abi::Function| -> Option<Vec<DynSolValue>> {
+                if f.inputs.len() != args.len() {
+                    return None;
+                }
+                let mut values = Vec::new();
+                for (input, arg) in f.inputs.iter().zip(args.iter()) {
+                    let ty = DynSolType::parse(&input.ty.to_string()).ok()?;
+                    let val = ty.coerce_str(arg).ok()?;
+                    values.push(val);
+                }
+                Some(values)
+            };
 
-            // Coerce string arguments to DynSolValues using the function's input types
-            let mut values = Vec::new();
-            for (input, arg) in func.inputs.iter().zip(args.iter()) {
-                let ty = DynSolType::parse(&input.ty.to_string())
-                    .map_err(|e| anyhow::anyhow!("Invalid type '{}': {}", input.ty, e))?;
-                let val = ty.coerce_str(arg).map_err(|e| {
-                    anyhow::anyhow!("Invalid value '{}' for type '{}': {}", arg, input.ty, e)
-                })?;
-                values.push(val);
-            }
+            // Try to find a matching overload
+            let (func, values) = if funcs.len() == 1 {
+                // Single function - try to coerce and give detailed error if it fails
+                let f = &funcs[0];
+                if f.inputs.len() != args.len() {
+                    return Err(anyhow::anyhow!(
+                        "Function '{}' expects {} arguments, got {}",
+                        function,
+                        f.inputs.len(),
+                        args.len()
+                    ));
+                }
+                let mut vals = Vec::new();
+                for (input, arg) in f.inputs.iter().zip(args.iter()) {
+                    let ty = DynSolType::parse(&input.ty.to_string())
+                        .map_err(|e| anyhow::anyhow!("Invalid type '{}': {}", input.ty, e))?;
+                    let val = ty.coerce_str(arg).map_err(|e| {
+                        anyhow::anyhow!("Invalid value '{}' for type '{}': {}", arg, input.ty, e)
+                    })?;
+                    vals.push(val);
+                }
+                (f, vals)
+            } else {
+                // Multiple overloads - try each one and find matches
+                let matches: Vec<_> = funcs
+                    .iter()
+                    .filter_map(|f| try_coerce(f).map(|v| (f, v)))
+                    .collect();
+
+                match matches.len() {
+                    0 => {
+                        // No matches - show all overloads
+                        let overloads: Vec<String> = funcs.iter().map(format_sig).collect();
+                        return Err(anyhow::anyhow!(
+                            "Function '{}' has {} overloads, none match the provided arguments:\n  {}\n\nProvided: {} args [{}]",
+                            function,
+                            funcs.len(),
+                            overloads.join("\n  "),
+                            args.len(),
+                            args.join(", ")
+                        ));
+                    }
+                    1 => matches.into_iter().next().unwrap(),
+                    _ => {
+                        // Multiple matches - ambiguous
+                        let matching_sigs: Vec<String> =
+                            matches.iter().map(|(f, _)| format_sig(f)).collect();
+                        return Err(anyhow::anyhow!(
+                            "Ambiguous call: {} overloads match the provided arguments:\n  {}\n\nUse explicit types or specify the full signature.",
+                            matches.len(),
+                            matching_sigs.join("\n  ")
+                        ));
+                    }
+                }
+            };
 
             // Encode the call
             let calldata = func

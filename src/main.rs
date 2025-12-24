@@ -502,13 +502,15 @@ async fn run_streaming_fetch(
             // Add timestamps if requested
             if let Some(ref endpoints) = endpoint_for_timestamps {
                 if let FetchLogs::Decoded(ref mut logs) = result.logs {
-                    // We need to block on the async timestamp fetch
-                    // This is safe because we're already in an async context
-                    let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async {
-                        if let Err(e) = add_timestamps_to_logs(logs, endpoints).await {
-                            eprintln!("Warning: Failed to fetch timestamps: {}", e);
-                        }
+                    // Use block_in_place to safely run async code from sync callback
+                    // This yields the current thread to the runtime, avoiding deadlock
+                    tokio::task::block_in_place(|| {
+                        let rt = tokio::runtime::Handle::current();
+                        rt.block_on(async {
+                            if let Err(e) = add_timestamps_to_logs(logs, endpoints).await {
+                                eprintln!("Warning: Failed to fetch timestamps: {}", e);
+                            }
+                        });
                     });
                 }
             }
