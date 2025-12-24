@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/michaeldim/ethcli/compare/v0.6.0...v0.7.0) (2025-12-24)
+
+
+### Features
+
+* **rpc:** add signature support to rpc call command ([bd43d24](https://github.com/michaeldim/ethcli/commit/bd43d241d82e0430ce291df4e84818e1c1e66564))
+
 ## [0.6.0](https://github.com/michaeldim/ethcli/compare/v0.5.1...v0.6.0) (2025-12-24)
 
 
