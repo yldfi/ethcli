@@ -12,12 +12,25 @@ use std::str::FromStr;
 #[derive(Subcommand)]
 pub enum RpcCommands {
     /// Call a contract (eth_call) - read-only, no transaction
+    ///
+    /// Examples:
+    ///   ethcli rpc call 0x... 0xa9059cbb...              # Raw calldata
+    ///   ethcli rpc call 0x... -s "balanceOf(address)" -a 0xabc...  # With signature
+    ///   ethcli rpc call 0x... -s "totalSupply()" -d uint256        # With decode
     Call {
         /// Contract address
         to: String,
 
-        /// Calldata (hex encoded)
-        data: String,
+        /// Calldata (hex encoded) - use this OR --sig
+        data: Option<String>,
+
+        /// Function signature (e.g., "balanceOf(address)")
+        #[arg(long, short, conflicts_with = "data")]
+        sig: Option<String>,
+
+        /// Function arguments (use with --sig)
+        #[arg(long, short = 'a', num_args = 1.., value_delimiter = ' ')]
+        args: Option<Vec<String>>,
 
         /// Block number or "latest" (default: latest)
         #[arg(long, short, default_value = "latest")]
@@ -131,15 +144,30 @@ pub async fn handle(
         RpcCommands::Call {
             to,
             data,
+            sig,
+            args,
             block,
             decode,
         } => {
             let to_addr =
                 Address::from_str(to).map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
 
-            let data_hex = data.strip_prefix("0x").unwrap_or(data);
-            let calldata =
-                hex::decode(data_hex).map_err(|e| anyhow::anyhow!("Invalid calldata: {}", e))?;
+            // Build calldata from either raw data or signature + args
+            let calldata = if let Some(signature) = sig {
+                // Encode from function signature
+                let func_args = args.as_deref().unwrap_or(&[]);
+                let encoded = super::cast::abi_encode(signature, func_args)?;
+                let hex_str = encoded.strip_prefix("0x").unwrap_or(&encoded);
+                hex::decode(hex_str).map_err(|e| anyhow::anyhow!("Encoding error: {}", e))?
+            } else if let Some(data) = data {
+                // Use raw calldata
+                let data_hex = data.strip_prefix("0x").unwrap_or(data);
+                hex::decode(data_hex).map_err(|e| anyhow::anyhow!("Invalid calldata: {}", e))?
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Calldata or --sig required. Use: rpc call <addr> <calldata> OR rpc call <addr> -s \"func()\""
+                ));
+            };
 
             let block_id = parse_block_id(block)?;
 
