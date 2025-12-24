@@ -42,9 +42,18 @@ pub async fn handle(
                 eprintln!("Looking up selector {}...", selector);
             }
 
-            match client.lookup_selector(selector).await {
-                Some(sig) => {
-                    println!("{}", sig);
+            match client.lookup_selector_all(selector).await {
+                Some(signatures) => {
+                    if signatures.len() == 1 {
+                        println!("{}", signatures[0]);
+                    } else {
+                        // Multiple matches - show all with ranking
+                        println!("Found {} matching signatures:", signatures.len());
+                        for (i, sig) in signatures.iter().enumerate() {
+                            let marker = if i == 0 { " (most common)" } else { "" };
+                            println!("  {}. {}{}", i + 1, sig, marker);
+                        }
+                    }
                 }
                 None => {
                     eprintln!("No signature found for selector {}", selector);
@@ -60,9 +69,18 @@ pub async fn handle(
                 eprintln!("Looking up event topic {}...", topic);
             }
 
-            match client.lookup_event(topic).await {
-                Some(sig) => {
-                    println!("{}", sig);
+            match client.lookup_event_all(topic).await {
+                Some(signatures) => {
+                    if signatures.len() == 1 {
+                        println!("{}", signatures[0]);
+                    } else {
+                        // Multiple matches - show all with ranking
+                        println!("Found {} matching signatures:", signatures.len());
+                        for (i, sig) in signatures.iter().enumerate() {
+                            let marker = if i == 0 { " (most common)" } else { "" };
+                            println!("  {}. {}{}", i + 1, sig, marker);
+                        }
+                    }
                 }
                 None => {
                     eprintln!("No signature found for topic {}", topic);

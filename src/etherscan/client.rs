@@ -103,8 +103,20 @@ impl Client {
 
     /// Lookup function signature by 4-byte selector
     ///
-    /// Checks cache first, then queries 4byte.directory
+    /// Checks cache first, then queries 4byte.directory.
+    /// Returns the first (most popular) result.
     pub async fn lookup_selector(&self, selector: &str) -> Option<String> {
+        self.lookup_selector_all(selector)
+            .await
+            .and_then(|v| v.into_iter().next())
+    }
+
+    /// Lookup all function signatures by 4-byte selector
+    ///
+    /// Returns all matching signatures from 4byte.directory, sorted by popularity.
+    /// The first result is typically the most common/correct one.
+    /// Note: This always queries 4byte.directory to ensure all collisions are returned.
+    pub async fn lookup_selector_all(&self, selector: &str) -> Option<Vec<String>> {
         let normalized = format!(
             "0x{}",
             selector
@@ -113,13 +125,8 @@ impl Client {
                 .to_lowercase()
         );
 
-        // Check cache first
-        if let Some(sig) = self.cache.get_function(&normalized) {
-            tracing::debug!("Cache hit for selector {}", normalized);
-            return Some(sig);
-        }
-
-        // Fetch from 4byte.directory
+        // Always fetch from 4byte.directory to get all collisions
+        // (cache only stores first result, so we skip it here)
         let url = format!(
             "https://www.4byte.directory/api/v1/signatures/?hex_signature={}",
             normalized
@@ -128,37 +135,46 @@ impl Client {
         let response = self.http.get(&url).send().await.ok()?;
         let json: serde_json::Value = response.json().await.ok()?;
 
-        // Get the first (most popular) result
-        let signature = json["results"]
+        // Get all results
+        let results: Vec<String> = json["results"]
             .as_array()?
-            .first()?
-            .get("text_signature")?
-            .as_str()
-            .map(String::from)?;
+            .iter()
+            .filter_map(|r| r.get("text_signature")?.as_str().map(String::from))
+            .collect();
 
-        // Cache the result
-        self.cache.set_function(&normalized, &signature);
-        tracing::debug!("Cached selector {} -> {}", normalized, signature);
+        if results.is_empty() {
+            return None;
+        }
 
-        Some(signature)
+        // Cache the first (most popular) result for future single lookups
+        self.cache.set_function(&normalized, &results[0]);
+        tracing::debug!("Cached selector {} -> {}", normalized, results[0]);
+
+        Some(results)
     }
 
     /// Lookup event signature by topic0 hash
     ///
-    /// Checks cache first, then queries 4byte.directory
+    /// Checks cache first, then queries 4byte.directory.
+    /// Returns the first (most popular) result.
     pub async fn lookup_event(&self, topic0: &str) -> Option<String> {
+        self.lookup_event_all(topic0)
+            .await
+            .and_then(|v| v.into_iter().next())
+    }
+
+    /// Lookup all event signatures by topic0 hash
+    ///
+    /// Returns all matching signatures from 4byte.directory, sorted by popularity.
+    /// Note: This always queries 4byte.directory to ensure all collisions are returned.
+    pub async fn lookup_event_all(&self, topic0: &str) -> Option<Vec<String>> {
         let normalized = format!(
             "0x{}",
             topic0.strip_prefix("0x").unwrap_or(topic0).to_lowercase()
         );
 
-        // Check cache first
-        if let Some(sig) = self.cache.get_event(&normalized) {
-            tracing::debug!("Cache hit for event {}", normalized);
-            return Some(sig);
-        }
-
-        // Fetch from 4byte.directory event signatures
+        // Always fetch from 4byte.directory to get all collisions
+        // (cache only stores first result, so we skip it here)
         let url = format!(
             "https://www.4byte.directory/api/v1/event-signatures/?hex_signature={}",
             normalized
@@ -167,19 +183,22 @@ impl Client {
         let response = self.http.get(&url).send().await.ok()?;
         let json: serde_json::Value = response.json().await.ok()?;
 
-        // Get the first result
-        let signature = json["results"]
+        // Get all results
+        let results: Vec<String> = json["results"]
             .as_array()?
-            .first()?
-            .get("text_signature")?
-            .as_str()
-            .map(String::from)?;
+            .iter()
+            .filter_map(|r| r.get("text_signature")?.as_str().map(String::from))
+            .collect();
 
-        // Cache the result
-        self.cache.set_event(&normalized, &signature);
-        tracing::debug!("Cached event {} -> {}", normalized, signature);
+        if results.is_empty() {
+            return None;
+        }
 
-        Some(signature)
+        // Cache the first result for future single lookups
+        self.cache.set_event(&normalized, &results[0]);
+        tracing::debug!("Cached event {} -> {}", normalized, results[0]);
+
+        Some(results)
     }
 
     // ========================================================================
