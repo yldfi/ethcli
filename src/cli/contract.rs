@@ -130,9 +130,38 @@ pub async fn handle(
                 }
 
                 for item in &items {
+                    // Sanitize contract name to prevent path traversal attacks
+                    // Remove any path separators and dangerous characters
+                    let safe_name: String = item
+                        .contract_name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                        .collect();
+
+                    if safe_name.is_empty() {
+                        eprintln!(
+                            "  Warning: Skipping contract with unsafe name: {}",
+                            item.contract_name
+                        );
+                        continue;
+                    }
+
                     // Save main source code using the source_code() method
-                    let filename = format!("{}.sol", item.contract_name);
+                    let filename = format!("{}.sol", safe_name);
                     let file_path = dir.join(&filename);
+
+                    // Double-check the final path is within the target directory
+                    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                    if let Ok(canonical_file) = file_path.canonicalize() {
+                        if !canonical_file.starts_with(&canonical_dir) {
+                            eprintln!(
+                                "  Warning: Skipping file that would escape directory: {}",
+                                item.contract_name
+                            );
+                            continue;
+                        }
+                    }
+
                     let source_code_str = item.source_code.source_code();
                     std::fs::write(&file_path, &source_code_str)?;
                     if !quiet {
@@ -224,14 +253,47 @@ pub async fn handle(
             // contract_abi returns JsonAbi directly
             let json_abi = abi;
 
-            // Find the function
-            let func = json_abi
+            // Find the function - handle overloaded functions by matching arg count
+            let funcs = json_abi
                 .functions
                 .get(function)
-                .and_then(|funcs| funcs.first())
                 .ok_or_else(|| anyhow::anyhow!("Function '{}' not found in ABI", function))?;
 
-            // Validate argument count
+            // Find the overload that matches the argument count
+            let func = if funcs.len() == 1 {
+                &funcs[0]
+            } else {
+                // Multiple overloads - find one matching arg count
+                funcs
+                    .iter()
+                    .find(|f| f.inputs.len() == args.len())
+                    .ok_or_else(|| {
+                        let overloads: Vec<String> = funcs
+                            .iter()
+                            .map(|f| {
+                                format!(
+                                    "{}({}) - {} args",
+                                    function,
+                                    f.inputs
+                                        .iter()
+                                        .map(|i| i.ty.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    f.inputs.len()
+                                )
+                            })
+                            .collect();
+                        anyhow::anyhow!(
+                            "Function '{}' has {} overloads, none match {} args:\n  {}",
+                            function,
+                            funcs.len(),
+                            args.len(),
+                            overloads.join("\n  ")
+                        )
+                    })?
+            };
+
+            // Validate argument count (redundant for overloaded case, but keeps non-overloaded consistent)
             if func.inputs.len() != args.len() {
                 return Err(anyhow::anyhow!(
                     "Function '{}' expects {} arguments, got {}",
