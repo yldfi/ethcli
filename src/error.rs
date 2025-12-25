@@ -195,6 +195,61 @@ pub enum CheckpointError {
 /// Result type alias for the library
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Implement RetryableError for RpcError to determine which errors should be retried
+impl crate::rpc::retry::RetryableError for RpcError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            // Transient errors that should be retried
+            RpcError::Timeout(_) => true,
+            RpcError::RateLimited(_) => true,
+            RpcError::ConnectionFailed(_) => true,
+            RpcError::Http(_) => true,
+
+            // Provider errors - check if transient
+            RpcError::Provider(msg) => {
+                let msg_lower = msg.to_lowercase();
+                // Retry on common transient errors
+                msg_lower.contains("timeout")
+                    || msg_lower.contains("connection")
+                    || msg_lower.contains("temporarily")
+                    || msg_lower.contains("503")
+                    || msg_lower.contains("502")
+                    || msg_lower.contains("504")
+                    || msg_lower.contains("network")
+            }
+
+            // Non-retryable errors
+            RpcError::AllEndpointsFailed => false,
+            RpcError::NoHealthyEndpoints => false,
+            RpcError::BlockRangeTooLarge { .. } => false,
+            RpcError::ResponseTooLarge(_) => false,
+            RpcError::InvalidResponse(_) => false,
+            RpcError::ProxyNotSupported(_) => false,
+        }
+    }
+}
+
+/// Implement RetryableError for the main Error type
+impl crate::rpc::retry::RetryableError for Error {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Error::Rpc(rpc_err) => rpc_err.is_retryable(),
+            Error::Io(io_err) => {
+                // Retry on transient IO errors
+                matches!(
+                    io_err.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::Interrupted
+                )
+            }
+            // Other error types are generally not retryable
+            _ => false,
+        }
+    }
+}
+
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Other(s)

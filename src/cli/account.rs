@@ -2,10 +2,12 @@
 //!
 //! Query balances, transactions, and token transfers for addresses
 
-use crate::config::{Chain, ConfigFile};
+use crate::config::{AddressBook, Chain};
 use crate::etherscan::Client;
-use crate::rpc::Endpoint;
+use crate::rpc::multicall::{selectors, MulticallBuilder, MULTICALL3_ADDRESS};
+use crate::rpc::get_rpc_endpoint;
 use alloy::primitives::Address;
+use alloy::providers::Provider;
 use clap::Subcommand;
 use std::io::Write;
 use std::str::FromStr;
@@ -16,12 +18,29 @@ fn is_ens_name(s: &str) -> bool {
     s.contains('.') && !s.starts_with("0x")
 }
 
-/// Resolve an ENS name to an address (if applicable)
-async fn resolve_ens_if_needed(
+/// Resolve an address from label, ENS name, or raw address
+/// Checks address book first, then tries ENS resolution
+async fn resolve_address(
     input: &str,
     chain: Chain,
     quiet: bool,
 ) -> anyhow::Result<(Address, Option<String>)> {
+    // If it looks like a raw address, parse directly
+    if input.starts_with("0x") && input.len() == 42 {
+        let addr =
+            Address::from_str(input).map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
+        return Ok((addr, None));
+    }
+
+    // Check address book first
+    let book = AddressBook::load_default();
+    if let Some(entry) = book.get(input) {
+        let addr = Address::from_str(&entry.address)
+            .map_err(|e| anyhow::anyhow!("Invalid stored address for '{}': {}", input, e))?;
+        return Ok((addr, Some(input.to_string())));
+    }
+
+    // Try ENS resolution if it looks like an ENS name
     if is_ens_name(input) {
         // Only works on Ethereum mainnet
         if chain != Chain::Ethereum {
@@ -33,34 +52,20 @@ async fn resolve_ens_if_needed(
             let _ = std::io::stderr().flush();
         }
 
-        // Get RPC endpoint for ENS resolution
-        let config = ConfigFile::load_default()
-            .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?
-            .unwrap_or_default();
-
-        let chain_endpoints: Vec<_> = config
-            .endpoints
-            .into_iter()
-            .filter(|e| e.enabled && e.chain == chain)
-            .collect();
-
-        if chain_endpoints.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No RPC endpoints configured for {}. Add one with: ethcli endpoints add <url>",
-                chain.display_name()
-            ));
-        }
-
-        let endpoint = Endpoint::new(chain_endpoints[0].clone(), 30, None)?;
+        // Get RPC endpoint for ENS resolution (smart selection)
+        let endpoint = get_rpc_endpoint(chain)?;
         let provider = endpoint.provider();
 
         let address = crate::cli::ens::resolve_name(&provider, input).await?;
-        Ok((address, Some(input.to_string())))
-    } else {
-        let addr =
-            Address::from_str(input).map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
-        Ok((addr, None))
+        return Ok((address, Some(input.to_string())));
     }
+
+    // Unknown label - suggest adding to address book
+    Err(anyhow::anyhow!(
+        "Unknown label '{}'. Use 'ethcli address add {} <address>' to save it.",
+        input,
+        input
+    ))
 }
 
 #[derive(Subcommand)]
@@ -351,7 +356,7 @@ pub async fn handle(
             // Resolve ENS names and parse addresses
             let mut resolved: Vec<(Address, Option<String>)> = Vec::with_capacity(addresses.len());
             for addr_str in addresses {
-                let (addr, ens_name) = resolve_ens_if_needed(addr_str, chain, quiet).await?;
+                let (addr, ens_name) = resolve_address(addr_str, chain, quiet).await?;
                 resolved.push((addr, ens_name));
             }
 
@@ -364,26 +369,33 @@ pub async fn handle(
                 let _ = std::io::stderr().flush();
             }
 
+            // Use RPC endpoint instead of Etherscan API
+            let endpoint = get_rpc_endpoint(chain)?;
+            let provider = endpoint.provider();
+
             if resolved.len() == 1 {
-                // Single address
-                let (addr, ens_name) = &resolved[0];
-                let balance = client.get_ether_balance_single(addr, None).await?;
-                let balance_eth = format_wei_to_eth(&balance.balance.to_string());
+                // Single address - direct RPC call
+                let (addr, label) = &resolved[0];
+                let balance = provider
+                    .get_balance(*addr)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Balance failed: {}", e))?;
+                let balance_eth = format_wei_to_eth(&balance.to_string());
 
                 if output == "json" {
                     let mut json = serde_json::json!({
                         "address": format!("{:#x}", addr),
-                        "balance_wei": balance.balance.to_string(),
+                        "balance_wei": balance.to_string(),
                         "balance": balance_eth,
                         "symbol": chain.native_symbol()
                     });
-                    if let Some(name) = ens_name {
-                        json["ens"] = serde_json::json!(name);
+                    if let Some(name) = label {
+                        json["label"] = serde_json::json!(name);
                     }
                     println!("{}", json);
                 } else {
-                    // Show ENS name if resolved
-                    if let Some(name) = ens_name {
+                    // Show label if resolved
+                    if let Some(name) = label {
                         println!("{} ({})", name, truncate_addr(&format!("{:#x}", addr)));
                     }
                     println!("{} {}", balance_eth, chain.native_symbol());
@@ -393,41 +405,57 @@ pub async fn handle(
                     }
                 }
             } else {
-                // Multiple addresses
-                let parsed: Vec<Address> = resolved.iter().map(|(a, _)| *a).collect();
-                let balances = client.get_ether_balance_multi(&parsed, None).await?;
+                // Multiple addresses - use Multicall3 for single RPC call
+                let mut multicall = MulticallBuilder::new();
+                for (addr, _) in &resolved {
+                    multicall = multicall.add_call_allow_failure(
+                        MULTICALL3_ADDRESS,
+                        selectors::get_eth_balance(*addr),
+                    );
+                }
+
+                // Execute with retry (up to 3 retries with exponential backoff)
+                let multicall_results = multicall.execute_with_retry(provider, 3).await?;
+
+                let mut results = Vec::new();
+                for (i, (addr, label)) in resolved.iter().enumerate() {
+                    let balance = multicall_results
+                        .get(i)
+                        .and_then(|r| r.decode_uint256())
+                        .ok_or_else(|| anyhow::anyhow!("Balance failed for {}", addr))?;
+                    results.push((*addr, label.clone(), balance));
+                }
 
                 if output == "json" {
-                    let results: Vec<serde_json::Value> = balances
+                    let json_results: Vec<serde_json::Value> = results
                         .iter()
-                        .zip(resolved.iter())
-                        .map(|(b, (_, ens_name))| {
+                        .map(|(addr, label, bal)| {
                             let mut json = serde_json::json!({
-                                "address": format!("{:#x}", b.account),
-                                "balance_wei": b.balance.to_string(),
-                                "balance": format_wei_to_eth(&b.balance.to_string()),
+                                "address": format!("{:#x}", addr),
+                                "balance_wei": bal.to_string(),
+                                "balance": format_wei_to_eth(&bal.to_string()),
                                 "symbol": chain.native_symbol()
                             });
-                            if let Some(name) = ens_name {
-                                json["ens"] = serde_json::json!(name);
+                            if let Some(name) = label {
+                                json["label"] = serde_json::json!(name);
                             }
                             json
                         })
                         .collect();
-                    println!("{}", serde_json::to_string_pretty(&results)?);
+                    println!("{}", serde_json::to_string_pretty(&json_results)?);
                 } else {
-                    for (b, (_, ens_name)) in balances.iter().zip(resolved.iter()) {
-                        let eth = format_wei_to_eth(&b.balance.to_string());
-                        if let Some(name) = ens_name {
+                    for (addr, label, bal) in &results {
+                        let eth = format_wei_to_eth(&bal.to_string());
+                        if let Some(name) = label {
                             println!(
                                 "{} ({}): {} {}",
                                 name,
-                                truncate_addr(&format!("{:#x}", b.account)),
+                                truncate_addr(&format!("{:#x}", addr)),
                                 eth,
                                 chain.native_symbol()
                             );
                         } else {
-                            println!("{:#x}: {} {}", b.account, eth, chain.native_symbol());
+                            println!("{:#x}: {} {}", addr, eth, chain.native_symbol());
                         }
                     }
                 }
@@ -946,3 +974,4 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
 fn is_leap_year(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
+

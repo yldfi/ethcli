@@ -657,3 +657,120 @@ mod tests {
         assert_eq!(cache.abi_count(), 3);
     }
 }
+
+// ============================================================================
+// Token Metadata Cache
+// ============================================================================
+
+/// Token metadata cache entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenCacheEntry {
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub decimals: Option<u8>,
+    pub total_supply: Option<String>,
+    pub timestamp: u64,
+}
+
+/// Token cache data structure
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenCacheData {
+    /// Map of "chain:address" -> TokenCacheEntry
+    pub tokens: HashMap<String, TokenCacheEntry>,
+}
+
+/// Token metadata cache for immutable token data
+pub struct TokenMetadataCache {
+    path: PathBuf,
+    data: RwLock<TokenCacheData>,
+}
+
+impl TokenMetadataCache {
+    /// Create a new token metadata cache with default path
+    pub fn new() -> Self {
+        let path = Self::default_path();
+        Self::with_path(path)
+    }
+
+    /// Get the default cache path
+    fn default_path() -> PathBuf {
+        dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("ethcli")
+            .join("token_cache.json")
+    }
+
+    /// Create a cache with a specific path
+    pub fn with_path(path: PathBuf) -> Self {
+        let data = if path.exists() {
+            fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            TokenCacheData::default()
+        };
+
+        Self {
+            path,
+            data: RwLock::new(data),
+        }
+    }
+
+    /// Get token metadata from cache
+    pub fn get(&self, chain: &str, address: &str) -> Option<TokenCacheEntry> {
+        let key = format!("{}:{}", chain, address.to_lowercase());
+        self.data.read().tokens.get(&key).cloned()
+    }
+
+    /// Set token metadata in cache
+    pub fn set(
+        &self,
+        chain: &str,
+        address: &str,
+        name: Option<String>,
+        symbol: Option<String>,
+        decimals: Option<u8>,
+        total_supply: Option<String>,
+    ) {
+        let key = format!("{}:{}", chain, address.to_lowercase());
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        {
+            let mut data = self.data.write();
+            data.tokens.insert(
+                key,
+                TokenCacheEntry {
+                    name,
+                    symbol,
+                    decimals,
+                    total_supply,
+                    timestamp,
+                },
+            );
+        }
+
+        self.save();
+    }
+
+    /// Save cache to disk
+    fn save(&self) {
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let data = self.data.read();
+        if let Ok(json) = serde_json::to_string_pretty(&*data) {
+            let _ = fs::write(&self.path, json);
+        }
+    }
+}
+
+impl Default for TokenMetadataCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -101,6 +101,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
         }
+        Commands::Address { action } => {
+            return ethcli::cli::address::handle(action, cli.quiet);
+        }
         Commands::Contract { action } => {
             return ethcli::cli::contract::handle(
                 action,

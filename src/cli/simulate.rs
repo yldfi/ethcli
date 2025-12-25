@@ -2,7 +2,8 @@
 //!
 //! Supports multiple backends: cast, anvil, tenderly, debug RPC
 
-use crate::config::ConfigFile;
+use crate::config::{Chain, ConfigFile};
+use crate::rpc::get_rpc_url;
 use clap::{Subcommand, ValueEnum};
 use std::process::Command;
 
@@ -682,9 +683,10 @@ async fn simulate_via_anvil(
     use std::process::Stdio;
     use tokio::time::{sleep, Duration};
 
-    let fork_url = rpc_url
-        .clone()
-        .unwrap_or_else(|| "https://eth.llamarpc.com".to_string());
+    let fork_url = rpc_url.clone().or_else(|| {
+        // Try to get URL from configured endpoints (smart selection)
+        get_rpc_url(Chain::Ethereum).ok()
+    }).unwrap_or_else(|| "https://eth.llamarpc.com".to_string());
 
     if !quiet {
         eprintln!("Starting Anvil fork of {}...", fork_url);
