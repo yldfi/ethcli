@@ -1,9 +1,11 @@
 //! Configuration management for eth-log-fetcher
 
+mod addressbook;
 mod chain;
 mod endpoint;
 mod file;
 
+pub use addressbook::{AddressBook, AddressEntry};
 pub use chain::{Chain, ChainId};
 pub use endpoint::{EndpointConfig, NodeType};
 pub use file::{ConfigFile, TenderlyConfig};

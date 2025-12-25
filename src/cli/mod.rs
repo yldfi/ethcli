@@ -3,6 +3,7 @@
 //! Each subcommand has its own module with argument definitions and handlers.
 
 pub mod account;
+pub mod address;
 pub mod cast;
 pub mod config;
 pub mod contract;
@@ -86,6 +87,12 @@ pub enum Commands {
     Account {
         #[command(subcommand)]
         action: account::AccountCommands,
+    },
+
+    /// Address book (save and lookup addresses by label)
+    Address {
+        #[command(subcommand)]
+        action: address::AddressCommands,
     },
 
     /// Contract operations (ABI, source, creation)
