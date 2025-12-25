@@ -7,6 +7,7 @@ use crate::rpc::Endpoint;
 use alloy::primitives::{keccak256, Address, B256};
 use alloy::providers::Provider;
 use clap::Subcommand;
+use std::io::Write;
 use std::str::FromStr;
 
 // ENS Registry address (same on mainnet and testnets)
@@ -92,6 +93,7 @@ pub async fn handle(
         EnsCommands::Resolve { name } => {
             if !quiet {
                 eprintln!("Resolving {}...", name);
+                let _ = std::io::stderr().flush();
             }
 
             let address = resolve_name(&provider, name).await?;
@@ -104,6 +106,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Looking up {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             match reverse_lookup(&provider, addr).await {
@@ -115,6 +118,7 @@ pub async fn handle(
         EnsCommands::Resolver { name } => {
             if !quiet {
                 eprintln!("Getting resolver for {}...", name);
+                let _ = std::io::stderr().flush();
             }
 
             let resolver = get_resolver(&provider, name).await?;
@@ -186,7 +190,7 @@ async fn get_resolver<P: Provider>(provider: &P, name: &str) -> anyhow::Result<A
 }
 
 /// Resolve an ENS name to an address
-async fn resolve_name<P: Provider>(provider: &P, name: &str) -> anyhow::Result<Address> {
+pub async fn resolve_name<P: Provider>(provider: &P, name: &str) -> anyhow::Result<Address> {
     let resolver = get_resolver(provider, name).await?;
     let node = namehash(name);
 

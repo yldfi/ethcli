@@ -5,6 +5,7 @@
 use crate::config::Chain;
 use crate::etherscan::Client;
 use clap::Subcommand;
+use std::io::Write;
 
 #[derive(Subcommand)]
 pub enum SigCommands {
@@ -40,6 +41,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Looking up selector {}...", selector);
+                let _ = std::io::stderr().flush();
             }
 
             match client.lookup_selector_all(selector).await {
@@ -67,6 +69,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Looking up event topic {}...", topic);
+                let _ = std::io::stderr().flush();
             }
 
             match client.lookup_event_all(topic).await {
