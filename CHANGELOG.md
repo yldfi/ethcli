@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/michaeldim/ethcli/compare/v0.9.0...v0.10.0) (2025-12-25)
+
+
+### Features
+
+* improve CLI usability with ENS resolution, signature prioritization, and output ordering ([7040982](https://github.com/michaeldim/ethcli/commit/704098231f0f56f75fb75db4e9352751cc60baee))
+
 ## [0.9.0](https://github.com/michaeldim/ethcli/compare/v0.8.0...v0.9.0) (2025-12-24)
 
 
