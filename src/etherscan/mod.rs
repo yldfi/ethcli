@@ -9,4 +9,4 @@ pub mod cache;
 mod client;
 
 pub use cache::{CacheData, CacheEntry, CacheStats, SignatureCache};
-pub use client::{Client, TokenMetadata};
+pub use client::Client;

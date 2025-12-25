@@ -10,13 +10,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Maximum number of entries before triggering cleanup
 const MAX_CACHE_ENTRIES: usize = 10_000;
 /// Cleanup interval in number of writes
 const CLEANUP_INTERVAL: u64 = 100;
+/// ABI cache TTL in seconds (90 days)
+const ABI_TTL_SECS: u64 = 90 * 24 * 60 * 60;
 
 /// Cache entry with timestamp
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +36,20 @@ pub struct CacheData {
     pub events: HashMap<String, CacheEntry>,
     /// Function signatures by 4-byte selector
     pub functions: HashMap<String, CacheEntry>,
+    /// Contract ABIs by chain_address key
+    #[serde(default)]
+    pub abis: HashMap<String, AbiCacheEntry>,
+}
+
+/// ABI cache entry with timestamp and metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbiCacheEntry {
+    /// The ABI JSON string
+    pub abi: String,
+    /// Contract name if known
+    pub name: Option<String>,
+    /// When this entry was added (Unix timestamp)
+    pub timestamp: u64,
 }
 
 /// Signature cache manager
@@ -44,8 +60,10 @@ pub struct SignatureCache {
     data: RwLock<CacheData>,
     /// Cache TTL (time-to-live)
     ttl: Duration,
-    /// Write counter for periodic cleanup
+    /// Write counter for periodic cleanup/save
     write_count: AtomicU64,
+    /// Dirty flag - true if cache has unsaved changes
+    dirty: AtomicBool,
 }
 
 impl SignatureCache {
@@ -63,6 +81,7 @@ impl SignatureCache {
             data: RwLock::new(data),
             ttl: Duration::from_secs(30 * 24 * 60 * 60), // 30 days default
             write_count: AtomicU64::new(0),
+            dirty: AtomicBool::new(false),
         }
     }
 
@@ -87,30 +106,48 @@ impl SignatureCache {
         serde_json::from_str(&content).ok()
     }
 
-    /// Save cache to file with periodic cleanup
+    /// Mark cache as dirty and periodically save to disk
+    ///
+    /// Only writes to disk every CLEANUP_INTERVAL writes to reduce I/O.
+    /// Use `save()` to force an immediate write.
+    fn maybe_save(&self) {
+        self.dirty.store(true, Ordering::Release);
+
+        // Increment write counter and check if save is needed
+        let count = self.write_count.fetch_add(1, Ordering::Relaxed);
+
+        // Only save every CLEANUP_INTERVAL writes or if cache is too large
+        let needs_save = {
+            let data = self.data.read();
+            count.is_multiple_of(CLEANUP_INTERVAL)
+                || data.events.len() + data.functions.len() > MAX_CACHE_ENTRIES
+        };
+
+        if needs_save {
+            self.cleanup_internal();
+            let _ = self.save_to_file();
+        }
+    }
+
+    /// Force save cache to file immediately
+    pub fn save(&self) {
+        if self.dirty.swap(false, Ordering::AcqRel) {
+            let _ = self.save_to_file();
+        }
+    }
+
+    /// Internal save to file
     fn save_to_file(&self) -> Result<(), std::io::Error> {
         // Create parent directories if needed
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // Increment write counter and check if cleanup is needed
-        let count = self.write_count.fetch_add(1, Ordering::Relaxed);
-
-        // Check if cleanup is needed (every CLEANUP_INTERVAL writes or if cache is too large)
-        let needs_cleanup = {
-            let data = self.data.read();
-            count.is_multiple_of(CLEANUP_INTERVAL)
-                || data.events.len() + data.functions.len() > MAX_CACHE_ENTRIES
-        };
-
-        if needs_cleanup {
-            self.cleanup_internal();
-        }
-
         let data = self.data.read();
         let content = serde_json::to_string_pretty(&*data)?;
-        fs::write(&self.path, content)
+        fs::write(&self.path, content)?;
+        self.dirty.store(false, Ordering::Release);
+        Ok(())
     }
 
     /// Internal cleanup without saving (to avoid recursion)
@@ -118,11 +155,14 @@ impl SignatureCache {
         let mut data = self.data.write();
         let now = Self::now();
         let ttl_secs = self.ttl.as_secs();
+        let abi_ttl_secs = ABI_TTL_SECS;
 
         data.events
             .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
         data.functions
             .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
+        data.abis
+            .retain(|_, e| now.saturating_sub(e.timestamp) <= abi_ttl_secs);
     }
 
     /// Get current Unix timestamp
@@ -167,7 +207,7 @@ impl SignatureCache {
             );
         }
         // Best effort save - don't block on I/O errors
-        let _ = self.save_to_file();
+        self.maybe_save();
     }
 
     /// Get function signature by 4-byte selector
@@ -197,7 +237,7 @@ impl SignatureCache {
             );
         }
         // Best effort save - don't block on I/O errors
-        let _ = self.save_to_file();
+        self.maybe_save();
     }
 
     /// Batch set multiple event signatures
@@ -215,7 +255,7 @@ impl SignatureCache {
                 );
             }
         }
-        let _ = self.save_to_file();
+        self.maybe_save();
     }
 
     /// Batch set multiple function signatures
@@ -233,7 +273,116 @@ impl SignatureCache {
                 );
             }
         }
-        let _ = self.save_to_file();
+        self.maybe_save();
+    }
+
+    // ========================================================================
+    // ABI Cache Methods
+    // ========================================================================
+
+    /// Make ABI cache key from chain ID and address
+    fn abi_key(chain_id: u64, address: &str) -> String {
+        format!("{}_{}", chain_id, address.to_lowercase())
+    }
+
+    /// Get cached ABI for a contract
+    pub fn get_abi(&self, chain_id: u64, address: &str) -> Option<(String, Option<String>)> {
+        let data = self.data.read();
+        let key = Self::abi_key(chain_id, address);
+
+        if let Some(entry) = data.abis.get(&key) {
+            // ABIs have longer TTL (90 days) since they rarely change
+            let abi_ttl = ABI_TTL_SECS;
+            let now = Self::now();
+            if now.saturating_sub(entry.timestamp) <= abi_ttl {
+                return Some((entry.abi.clone(), entry.name.clone()));
+            }
+        }
+        None
+    }
+
+    /// Cache an ABI for a contract
+    pub fn set_abi(&self, chain_id: u64, address: &str, abi: &str, name: Option<&str>) {
+        {
+            let mut data = self.data.write();
+            let key = Self::abi_key(chain_id, address);
+            data.abis.insert(
+                key,
+                AbiCacheEntry {
+                    abi: abi.to_string(),
+                    name: name.map(|s| s.to_string()),
+                    timestamp: Self::now(),
+                },
+            );
+        }
+        self.maybe_save();
+    }
+
+    /// Get number of cached ABIs
+    pub fn abi_count(&self) -> usize {
+        self.data.read().abis.len()
+    }
+
+    /// Search all cached ABIs for a function matching the given selector
+    ///
+    /// Returns the function signature string if found (e.g., "transfer(address,uint256)")
+    pub fn find_function_in_abis(&self, selector: &[u8; 4]) -> Option<String> {
+        use alloy::json_abi::JsonAbi;
+
+        let data = self.data.read();
+        let now = Self::now();
+        let abi_ttl = ABI_TTL_SECS;
+
+        for entry in data.abis.values() {
+            // Skip expired entries
+            if now.saturating_sub(entry.timestamp) > abi_ttl {
+                continue;
+            }
+
+            // Try to parse and search this ABI
+            if let Ok(abi) = serde_json::from_str::<JsonAbi>(&entry.abi) {
+                for func in abi.functions() {
+                    if func.selector() == *selector {
+                        let param_types: Vec<String> =
+                            func.inputs.iter().map(|p| p.ty.to_string()).collect();
+                        return Some(format!("{}({})", func.name, param_types.join(",")));
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Search all cached ABIs for an event matching the given topic0
+    ///
+    /// Returns the event signature string if found (e.g., "Transfer(address,address,uint256)")
+    pub fn find_event_in_abis(&self, topic0: &[u8; 32]) -> Option<String> {
+        use alloy::json_abi::JsonAbi;
+
+        let data = self.data.read();
+        let now = Self::now();
+        let abi_ttl = ABI_TTL_SECS;
+
+        for entry in data.abis.values() {
+            // Skip expired entries
+            if now.saturating_sub(entry.timestamp) > abi_ttl {
+                continue;
+            }
+
+            // Try to parse and search this ABI
+            if let Ok(abi) = serde_json::from_str::<JsonAbi>(&entry.abi) {
+                for event in abi.events() {
+                    if event.selector().0 == *topic0 {
+                        let param_types: Vec<String> =
+                            event.inputs.iter().map(|p| p.ty.to_string()).collect();
+                        return Some(format!("{}({})", event.name, param_types.join(",")));
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Get cache statistics
@@ -241,6 +390,7 @@ impl SignatureCache {
         let data = self.data.read();
         let now = Self::now();
         let ttl_secs = self.ttl.as_secs();
+        let abi_ttl_secs = ABI_TTL_SECS;
 
         let valid_events = data
             .events
@@ -252,12 +402,19 @@ impl SignatureCache {
             .values()
             .filter(|e| now.saturating_sub(e.timestamp) <= ttl_secs)
             .count();
+        let valid_abis = data
+            .abis
+            .values()
+            .filter(|e| now.saturating_sub(e.timestamp) <= abi_ttl_secs)
+            .count();
 
         CacheStats {
             total_events: data.events.len(),
             valid_events,
             total_functions: data.functions.len(),
             valid_functions,
+            total_abis: data.abis.len(),
+            valid_abis,
             cache_path: self.path.clone(),
         }
     }
@@ -281,14 +438,24 @@ impl SignatureCache {
             let mut data = self.data.write();
             data.events.clear();
             data.functions.clear();
+            data.abis.clear();
         }
-        let _ = self.save_to_file();
+        self.maybe_save();
     }
 }
 
 impl Default for SignatureCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for SignatureCache {
+    fn drop(&mut self) {
+        // Save any unsaved changes on shutdown
+        if self.dirty.load(Ordering::Acquire) {
+            let _ = self.save_to_file();
+        }
     }
 }
 
@@ -299,6 +466,8 @@ pub struct CacheStats {
     pub valid_events: usize,
     pub total_functions: usize,
     pub valid_functions: usize,
+    pub total_abis: usize,
+    pub valid_abis: usize,
     pub cache_path: PathBuf,
 }
 
@@ -306,11 +475,13 @@ impl std::fmt::Display for CacheStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Cache: {} events ({} valid), {} functions ({} valid)\nPath: {}",
+            "Cache: {} events ({} valid), {} functions ({} valid), {} ABIs ({} valid)\nPath: {}",
             self.total_events,
             self.valid_events,
             self.total_functions,
             self.valid_functions,
+            self.total_abis,
+            self.valid_abis,
             self.cache_path.display()
         )
     }
@@ -394,5 +565,95 @@ mod tests {
             cache.get_event("0xbbb"),
             Some("EventB(address)".to_string())
         );
+    }
+
+    #[test]
+    fn test_abi_cache() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_cache.json");
+        let cache = SignatureCache::with_path(path.clone());
+
+        // Test set and get ABI
+        let abi = r#"[{"type":"function","name":"transfer","inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[{"type":"bool"}]}]"#;
+        cache.set_abi(
+            1,
+            "0x1234567890123456789012345678901234567890",
+            abi,
+            Some("TestToken"),
+        );
+
+        let result = cache.get_abi(1, "0x1234567890123456789012345678901234567890");
+        assert!(result.is_some());
+        let (cached_abi, name) = result.unwrap();
+        assert_eq!(cached_abi, abi);
+        assert_eq!(name, Some("TestToken".to_string()));
+
+        // Test case insensitivity
+        let result = cache.get_abi(1, "0x1234567890123456789012345678901234567890");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_abi_cache_persistence() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_cache.json");
+
+        let abi = r#"[{"type":"function","name":"approve","inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[{"type":"bool"}]}]"#;
+
+        // Create cache and add ABI
+        {
+            let cache = SignatureCache::with_path(path.clone());
+            cache.set_abi(1, "0xabcdef", abi, None);
+        }
+
+        // Create new cache instance and verify persistence
+        {
+            let cache = SignatureCache::with_path(path);
+            let result = cache.get_abi(1, "0xabcdef");
+            assert!(result.is_some());
+            let (cached_abi, _) = result.unwrap();
+            assert_eq!(cached_abi, abi);
+        }
+    }
+
+    #[test]
+    fn test_find_function_in_abis() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_cache.json");
+        let cache = SignatureCache::with_path(path);
+
+        // Add an ABI with transfer function (selector 0xa9059cbb)
+        let abi = r#"[{"type":"function","name":"transfer","inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[{"type":"bool"}],"stateMutability":"nonpayable"}]"#;
+        cache.set_abi(1, "0xtoken", abi, Some("TestToken"));
+
+        // Search for transfer selector
+        let selector: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+        let result = cache.find_function_in_abis(&selector);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "transfer(address,uint256)");
+
+        // Search for non-existent selector
+        let unknown_selector: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
+        let result = cache.find_function_in_abis(&unknown_selector);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_abi_count() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test_cache.json");
+        let cache = SignatureCache::with_path(path);
+
+        assert_eq!(cache.abi_count(), 0);
+
+        cache.set_abi(1, "0xaaa", "[]", None);
+        assert_eq!(cache.abi_count(), 1);
+
+        cache.set_abi(1, "0xbbb", "[]", None);
+        assert_eq!(cache.abi_count(), 2);
+
+        // Same address, different chain
+        cache.set_abi(137, "0xaaa", "[]", None);
+        assert_eq!(cache.abi_count(), 3);
     }
 }

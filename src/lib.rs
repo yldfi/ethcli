@@ -38,6 +38,7 @@ pub mod output;
 pub mod proxy;
 pub mod rpc;
 pub mod tx;
+pub mod utils;
 
 // Legacy alias for cache module (now in etherscan::cache)
 pub mod cache {
@@ -52,7 +53,7 @@ pub use config::{
     NodeType, OutputConfig, OutputFormat, ProxyConfig, RpcConfig,
 };
 pub use error::{AbiError, CheckpointError, ConfigError, Error, OutputError, Result, RpcError};
-pub use etherscan::{CacheStats, Client as EtherscanClient, SignatureCache, TokenMetadata};
+pub use etherscan::{CacheStats, Client as EtherscanClient, SignatureCache};
 pub use fetcher::{
     FetchLogs, FetchProgress, FetchResult, FetchStats, LogFetcher, StreamingFetcher,
 };
@@ -63,3 +64,4 @@ pub use rpc::{
     OptimizationResult, RpcPool,
 };
 pub use tx::{format_analysis, TransactionAnalysis, TxAnalyzer};
+pub use utils::TokenMetadata;

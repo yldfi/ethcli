@@ -3,7 +3,7 @@
 //! Fetch ABI, source code, and creation info for contracts
 
 use crate::config::{Chain, ConfigFile, EndpointConfig};
-use crate::etherscan::Client;
+use crate::etherscan::{Client, SignatureCache};
 use crate::rpc::Endpoint;
 use alloy::dyn_abi::{DynSolType, DynSolValue, FunctionExt, JsonAbiExt};
 use alloy::primitives::{Address, B256};
@@ -11,6 +11,7 @@ use alloy::providers::Provider;
 use clap::Subcommand;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 /// Get EIP-1967 implementation slot (parsed once)
@@ -173,16 +174,32 @@ pub async fn handle(
             let addr = Address::from_str(address)
                 .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
 
-            if !quiet {
-                eprintln!("Fetching ABI for {}...", address);
-            }
+            let cache = Arc::new(SignatureCache::new());
+            let chain_id = chain.chain_id();
 
-            let abi = client
-                .contract_abi(addr)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to fetch ABI: {}", e))?;
+            // Check cache first
+            let json = if let Some((cached_abi, _)) = cache.get_abi(chain_id, address) {
+                if !quiet {
+                    eprintln!("Using cached ABI for {}...", address);
+                }
+                cached_abi
+            } else {
+                if !quiet {
+                    eprintln!("Fetching ABI for {}...", address);
+                }
 
-            let json = serde_json::to_string_pretty(&abi)?;
+                let abi = client
+                    .contract_abi(addr)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to fetch ABI: {}", e))?;
+
+                let json = serde_json::to_string_pretty(&abi)?;
+
+                // Cache the ABI
+                cache.set_abi(chain_id, address, &json, None);
+
+                json
+            };
 
             if let Some(path) = output {
                 std::fs::write(path, &json)?;
