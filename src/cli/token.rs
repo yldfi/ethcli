@@ -5,6 +5,7 @@
 use crate::config::Chain;
 use crate::etherscan::Client;
 use clap::Subcommand;
+use std::io::Write;
 
 #[derive(Subcommand)]
 pub enum TokenCommands {
@@ -61,6 +62,7 @@ pub async fn handle(
         TokenCommands::Info { address, output } => {
             if !quiet {
                 eprintln!("Fetching token info for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             // Use our custom eth_call-based metadata fetch

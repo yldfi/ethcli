@@ -2,11 +2,66 @@
 //!
 //! Query balances, transactions, and token transfers for addresses
 
-use crate::config::Chain;
+use crate::config::{Chain, ConfigFile};
 use crate::etherscan::Client;
+use crate::rpc::Endpoint;
 use alloy::primitives::Address;
 use clap::Subcommand;
+use std::io::Write;
 use std::str::FromStr;
+
+/// Check if a string looks like an ENS name
+fn is_ens_name(s: &str) -> bool {
+    // Contains a dot and doesn't start with 0x
+    s.contains('.') && !s.starts_with("0x")
+}
+
+/// Resolve an ENS name to an address (if applicable)
+async fn resolve_ens_if_needed(
+    input: &str,
+    chain: Chain,
+    quiet: bool,
+) -> anyhow::Result<(Address, Option<String>)> {
+    if is_ens_name(input) {
+        // Only works on Ethereum mainnet
+        if chain != Chain::Ethereum {
+            return Err(anyhow::anyhow!("ENS is only available on Ethereum mainnet"));
+        }
+
+        if !quiet {
+            eprintln!("Resolving ENS name {}...", input);
+            let _ = std::io::stderr().flush();
+        }
+
+        // Get RPC endpoint for ENS resolution
+        let config = ConfigFile::load_default()
+            .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?
+            .unwrap_or_default();
+
+        let chain_endpoints: Vec<_> = config
+            .endpoints
+            .into_iter()
+            .filter(|e| e.enabled && e.chain == chain)
+            .collect();
+
+        if chain_endpoints.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No RPC endpoints configured for {}. Add one with: ethcli endpoints add <url>",
+                chain.display_name()
+            ));
+        }
+
+        let endpoint = Endpoint::new(chain_endpoints[0].clone(), 30, None)?;
+        let provider = endpoint.provider();
+
+        let address = crate::cli::ens::resolve_name(&provider, input).await?;
+        Ok((address, Some(input.to_string())))
+    } else {
+        let addr =
+            Address::from_str(input).map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
+        Ok((addr, None))
+    }
+}
 
 #[derive(Subcommand)]
 pub enum AccountCommands {
@@ -170,6 +225,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching account info for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             // Fetch balance
@@ -292,64 +348,87 @@ pub async fn handle(
                 return Err(anyhow::anyhow!("At least one address is required"));
             }
 
+            // Resolve ENS names and parse addresses
+            let mut resolved: Vec<(Address, Option<String>)> = Vec::with_capacity(addresses.len());
+            for addr_str in addresses {
+                let (addr, ens_name) = resolve_ens_if_needed(addr_str, chain, quiet).await?;
+                resolved.push((addr, ens_name));
+            }
+
             if !quiet {
                 eprintln!(
                     "Fetching balance for {} address(es) on {}...",
-                    addresses.len(),
+                    resolved.len(),
                     chain.display_name()
                 );
+                let _ = std::io::stderr().flush();
             }
 
-            // Parse addresses
-            let parsed: Vec<Address> = addresses
-                .iter()
-                .map(|a| Address::from_str(a))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
-
-            if parsed.len() == 1 {
+            if resolved.len() == 1 {
                 // Single address
-                let balance = client.get_ether_balance_single(&parsed[0], None).await?;
+                let (addr, ens_name) = &resolved[0];
+                let balance = client.get_ether_balance_single(addr, None).await?;
                 let balance_eth = format_wei_to_eth(&balance.balance.to_string());
 
                 if output == "json" {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "address": format!("{:#x}", parsed[0]),
-                            "balance_wei": balance.balance.to_string(),
-                            "balance": balance_eth,
-                            "symbol": chain.native_symbol()
-                        })
-                    );
+                    let mut json = serde_json::json!({
+                        "address": format!("{:#x}", addr),
+                        "balance_wei": balance.balance.to_string(),
+                        "balance": balance_eth,
+                        "symbol": chain.native_symbol()
+                    });
+                    if let Some(name) = ens_name {
+                        json["ens"] = serde_json::json!(name);
+                    }
+                    println!("{}", json);
                 } else {
+                    // Show ENS name if resolved
+                    if let Some(name) = ens_name {
+                        println!("{} ({})", name, truncate_addr(&format!("{:#x}", addr)));
+                    }
                     println!("{} {}", balance_eth, chain.native_symbol());
                     // Add explorer link
                     if let Some(explorer) = chain.explorer_url() {
-                        println!("\nExplorer: {}/address/{:#x}", explorer, parsed[0]);
+                        println!("\nExplorer: {}/address/{:#x}", explorer, addr);
                     }
                 }
             } else {
                 // Multiple addresses
+                let parsed: Vec<Address> = resolved.iter().map(|(a, _)| *a).collect();
                 let balances = client.get_ether_balance_multi(&parsed, None).await?;
 
                 if output == "json" {
                     let results: Vec<serde_json::Value> = balances
                         .iter()
-                        .map(|b| {
-                            serde_json::json!({
+                        .zip(resolved.iter())
+                        .map(|(b, (_, ens_name))| {
+                            let mut json = serde_json::json!({
                                 "address": format!("{:#x}", b.account),
                                 "balance_wei": b.balance.to_string(),
                                 "balance": format_wei_to_eth(&b.balance.to_string()),
                                 "symbol": chain.native_symbol()
-                            })
+                            });
+                            if let Some(name) = ens_name {
+                                json["ens"] = serde_json::json!(name);
+                            }
+                            json
                         })
                         .collect();
                     println!("{}", serde_json::to_string_pretty(&results)?);
                 } else {
-                    for b in &balances {
+                    for (b, (_, ens_name)) in balances.iter().zip(resolved.iter()) {
                         let eth = format_wei_to_eth(&b.balance.to_string());
-                        println!("{:#x}: {} {}", b.account, eth, chain.native_symbol());
+                        if let Some(name) = ens_name {
+                            println!(
+                                "{} ({}): {} {}",
+                                name,
+                                truncate_addr(&format!("{:#x}", b.account)),
+                                eth,
+                                chain.native_symbol()
+                            );
+                        } else {
+                            println!("{:#x}: {} {}", b.account, eth, chain.native_symbol());
+                        }
                     }
                 }
             }
@@ -367,6 +446,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching transactions for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             let params = foundry_block_explorers::account::TxListParams {
@@ -459,6 +539,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching internal transactions for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             let query = foundry_block_explorers::account::InternalTxQueryOption::ByAddress(addr);
@@ -517,6 +598,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching ERC20 transfers for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             let query = if let Some(tok) = token {
@@ -585,6 +667,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching ERC721 transfers for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             let query = if let Some(tok) = token {
@@ -653,6 +736,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching ERC1155 transfers for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             let query = if let Some(tok) = token {
@@ -719,6 +803,7 @@ pub async fn handle(
 
             if !quiet {
                 eprintln!("Fetching mined blocks for {}...", address);
+                let _ = std::io::stderr().flush();
             }
 
             // Note: get_mined_blocks API expects BlockType, not page/limit
