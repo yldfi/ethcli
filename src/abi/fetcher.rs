@@ -5,104 +5,15 @@
 use crate::config::Chain;
 use crate::error::{AbiError, Result};
 use crate::etherscan::SignatureCache;
+use crate::utils::{
+    decode_string_from_hex, decode_uint8_from_hex, urlencoding_encode, TokenMetadata,
+};
 use alloy::json_abi::JsonAbi;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Decode a string from ABI-encoded hex data (returned by name() or symbol())
-fn decode_string_from_hex(hex: &str) -> Option<String> {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    if hex.len() < 128 {
-        // Minimum: offset (32 bytes) + length (32 bytes) = 64 hex chars
-        // Try as bytes32 (some tokens return bytes32 for name/symbol)
-        return decode_bytes32_string(hex);
-    }
-
-    let bytes = hex::decode(hex).ok()?;
-    if bytes.len() < 64 {
-        return None;
-    }
-
-    // ABI-encoded string: offset (32 bytes) + length (32 bytes) + data
-    // Skip first 32 bytes (offset), read next 32 bytes as length
-    let length = u64::from_be_bytes(bytes[56..64].try_into().ok()?) as usize;
-
-    // Prevent integer overflow: use checked_add for bounds calculation
-    let end = 64usize.checked_add(length)?;
-    if bytes.len() < end {
-        return None;
-    }
-
-    let string_bytes = &bytes[64..end];
-    String::from_utf8(string_bytes.to_vec())
-        .ok()
-        .map(|s| s.trim_end_matches('\0').to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Decode a bytes32 as a string (for tokens that return bytes32 for name/symbol)
-fn decode_bytes32_string(hex: &str) -> Option<String> {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    if hex.len() != 64 {
-        return None;
-    }
-
-    let bytes = hex::decode(hex).ok()?;
-    // Find the null terminator or use the full 32 bytes
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(32);
-    String::from_utf8(bytes[..end].to_vec())
-        .ok()
-        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_graphic() || c == ' '))
-}
-
-/// Decode a uint8 from hex data (returned by decimals())
-fn decode_uint8_from_hex(hex: &str) -> Option<u8> {
-    let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    if hex.is_empty() {
-        return None;
-    }
-
-    // Handle all-zeros case (e.g., "0" or "00...00" for tokens with 0 decimals)
-    let trimmed = hex.trim_start_matches('0');
-    if trimmed.is_empty() {
-        return Some(0);
-    }
-
-    // Parse as u64 first, then check if it fits in u8
-    let value = u64::from_str_radix(trimmed, 16).ok()?;
-    if value > 255 {
-        return None;
-    }
-    Some(value as u8)
-}
-
-/// URL-encode a string for safe use in query parameters
-/// Only encodes characters that are unsafe in URLs
-fn urlencoding_encode(input: &str) -> Cow<'_, str> {
-    let needs_encoding = input
-        .bytes()
-        .any(|b| !matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~'));
-
-    if !needs_encoding {
-        return Cow::Borrowed(input);
-    }
-
-    let mut encoded = String::with_capacity(input.len() * 3);
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => {
-                encoded.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    Cow::Owned(encoded)
-}
 
 /// Etherscan API response
 #[derive(Debug, Deserialize)]
@@ -134,17 +45,6 @@ pub struct ContractMetadata {
     pub is_proxy: bool,
     /// Implementation address (if proxy)
     pub implementation: Option<String>,
-}
-
-/// Token metadata (ERC20/ERC721/ERC1155)
-#[derive(Debug, Clone)]
-pub struct TokenMetadata {
-    /// Token name
-    pub name: Option<String>,
-    /// Token symbol
-    pub symbol: Option<String>,
-    /// Token decimals (for ERC20)
-    pub decimals: Option<u8>,
 }
 
 /// ABI fetcher from Etherscan and local files
@@ -193,8 +93,19 @@ impl AbiFetcher {
     ///
     /// Works without an API key (rate limited to ~5 calls/sec)
     /// With API key: ~100 calls/sec
+    ///
+    /// Uses local cache to avoid repeated fetches.
     pub async fn fetch_from_etherscan(&self, chain: Chain, address: &str) -> Result<JsonAbi> {
         let chain_id = chain.chain_id();
+
+        // Check cache first
+        if let Some((cached_abi, _)) = self.cache.get_abi(chain_id, address) {
+            tracing::debug!("Using cached ABI for {} on chain {}", address, chain_id);
+            if let Ok(abi) = serde_json::from_str(&cached_abi) {
+                return Ok(abi);
+            }
+            // If cache is corrupted, fall through to fetch
+        }
 
         // URL-encode the address to prevent parameter injection
         let encoded_address: Cow<str> = urlencoding_encode(address);
@@ -262,6 +173,10 @@ impl AbiFetcher {
 
         let abi: JsonAbi = serde_json::from_str(abi_str)
             .map_err(|e| AbiError::ParseError(format!("Failed to parse ABI JSON: {}", e)))?;
+
+        // Cache the ABI for future use
+        self.cache.set_abi(chain_id, address, abi_str, None);
+        tracing::debug!("Cached ABI for {} on chain {}", address, chain_id);
 
         Ok(abi)
     }
@@ -527,11 +442,9 @@ impl AbiFetcher {
         chain: Chain,
         address: &str,
     ) -> Result<TokenMetadata> {
-        // Use Etherscan proxy for eth_call
         let chain_id = chain.chain_id();
-        let _encoded_address: Cow<str> = urlencoding_encode(address);
 
-        // Prepare function selectors
+        // Function selectors
         // name() = 0x06fdde03
         // symbol() = 0x95d89b41
         // decimals() = 0x313ce567
@@ -594,8 +507,8 @@ impl AbiFetcher {
             .as_str()
             .ok_or_else(|| AbiError::ParseError("Missing result in eth_call".to_string()))?;
 
-        // Check for error
-        if result == "0x" || result.len() < 3 {
+        // Check for empty result (0x is empty, but 0x00 or 0x01 are valid)
+        if result == "0x" {
             return Err(AbiError::ParseError("Empty eth_call result".to_string()).into());
         }
 

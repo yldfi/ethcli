@@ -103,6 +103,10 @@ pub async fn handle(
                 "Events:    {} cached ({} valid)",
                 stats.total_events, stats.valid_events
             );
+            println!(
+                "ABIs:      {} cached ({} valid)",
+                stats.total_abis, stats.valid_abis
+            );
             println!("Path:      {}", stats.cache_path.display());
         }
 

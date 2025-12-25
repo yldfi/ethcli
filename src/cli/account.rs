@@ -10,6 +10,16 @@ use std::str::FromStr;
 
 #[derive(Subcommand)]
 pub enum AccountCommands {
+    /// Get comprehensive account information (balance, recent txs, tokens)
+    Info {
+        /// Address to query
+        address: String,
+
+        /// Output format (pretty, json)
+        #[arg(long, short, default_value = "pretty")]
+        output: String,
+    },
+
     /// Get native token balance for address(es)
     Balance {
         /// Address(es) to query
@@ -154,6 +164,129 @@ pub async fn handle(
     let client = Client::new(chain, api_key)?;
 
     match action {
+        AccountCommands::Info { address, output } => {
+            let addr = Address::from_str(address)
+                .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
+
+            if !quiet {
+                eprintln!("Fetching account info for {}...", address);
+            }
+
+            // Fetch balance
+            let balance = client.get_ether_balance_single(&addr, None).await?;
+            let balance_eth = format_wei_to_eth(&balance.balance.to_string());
+
+            // Fetch recent transactions (last 10)
+            let tx_params = foundry_block_explorers::account::TxListParams {
+                start_block: 0,
+                end_block: 99999999,
+                page: 1,
+                offset: 10,
+                sort: foundry_block_explorers::account::Sort::Desc,
+            };
+            let txs = client.get_transactions(&addr, Some(tx_params)).await.ok();
+
+            // Fetch ERC20 transfers to identify token holdings
+            let token_params = foundry_block_explorers::account::TxListParams {
+                start_block: 0,
+                end_block: 99999999,
+                page: 1,
+                offset: 20,
+                sort: foundry_block_explorers::account::Sort::Desc,
+            };
+            let token_query = foundry_block_explorers::account::TokenQueryOption::ByAddress(addr);
+            let token_transfers = client
+                .get_erc20_token_transfer_events(token_query, Some(token_params))
+                .await
+                .ok();
+
+            if output == "json" {
+                let json = serde_json::json!({
+                    "address": format!("{:#x}", addr),
+                    "balance": balance_eth,
+                    "balanceWei": balance.balance.to_string(),
+                    "symbol": chain.native_symbol(),
+                    "recentTransactions": txs.as_ref().map(|txs| txs.iter().take(10).map(|tx| {
+                        serde_json::json!({
+                            "hash": format!("{:#x}", tx.hash.value().unwrap_or_default()),
+                            "blockNumber": tx.block_number.as_number().map(|n| n.to::<u64>()),
+                            "from": tx.from.value().map(|a| format!("{:#x}", a)),
+                            "to": tx.to.map(|a| format!("{:#x}", a)),
+                            "value": tx.value.to_string(),
+                            "valueEth": format_wei_to_eth(&tx.value.to_string()),
+                        })
+                    }).collect::<Vec<_>>()),
+                    "recentTokenTransfers": token_transfers.as_ref().map(|transfers| transfers.iter().take(10).map(|tx| {
+                        serde_json::json!({
+                            "token": &tx.token_symbol,
+                            "tokenAddress": format!("{:#x}", tx.contract_address),
+                            "from": format!("{:#x}", tx.from),
+                            "to": tx.to.as_ref().map(|a| format!("{:#x}", a)),
+                            "value": &tx.value,
+                        })
+                    }).collect::<Vec<_>>()),
+                });
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                println!("Account: {}", address);
+                println!("{}", "═".repeat(60));
+                println!("Balance: {} {}", balance_eth, chain.native_symbol());
+
+                if let Some(ref txs) = txs {
+                    println!("\nRecent Transactions ({}):", txs.len().min(10));
+                    println!("{}", "─".repeat(60));
+                    for tx in txs.iter().take(5) {
+                        let hash = format!("{:#x}", tx.hash.value().unwrap_or_default());
+                        let value_eth = format_wei_to_eth(&tx.value.to_string());
+                        let to_addr = tx
+                            .to
+                            .map(|a| format!("{:#x}", a))
+                            .unwrap_or_else(|| "contract".to_string());
+                        let status = if tx.is_error == "0" { "✓" } else { "✗" };
+                        println!(
+                            "  {} {} {} {} → {}",
+                            status,
+                            &hash[..12],
+                            value_eth,
+                            chain.native_symbol(),
+                            truncate_addr(&to_addr)
+                        );
+                    }
+                    if txs.len() > 5 {
+                        println!("  ... and {} more", txs.len() - 5);
+                    }
+                }
+
+                if let Some(ref transfers) = token_transfers {
+                    if !transfers.is_empty() {
+                        println!("\nRecent Token Activity:");
+                        println!("{}", "─".repeat(60));
+                        // Show unique tokens
+                        let mut seen_tokens: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for tx in transfers.iter() {
+                            let key = format!(
+                                "{} ({})",
+                                tx.token_symbol,
+                                truncate_addr(&format!("{:#x}", tx.contract_address))
+                            );
+                            if seen_tokens.insert(key.clone()) && seen_tokens.len() <= 5 {
+                                println!("  • {}", key);
+                            }
+                        }
+                        if seen_tokens.len() > 5 {
+                            println!("  ... and {} more tokens", seen_tokens.len() - 5);
+                        }
+                    }
+                }
+
+                // Explorer link
+                if let Some(explorer) = chain.explorer_url() {
+                    println!("\nExplorer: {}/address/{}", explorer, address);
+                }
+            }
+        }
+
         AccountCommands::Balance { addresses, output } => {
             if addresses.is_empty() {
                 return Err(anyhow::anyhow!("At least one address is required"));
@@ -251,7 +384,34 @@ pub async fn handle(
             let txs = client.get_transactions(&addr, Some(params)).await?;
 
             if output == "json" {
-                println!("{}", serde_json::to_string_pretty(&txs)?);
+                // Manually construct JSON to avoid GenesisOption serialization issues
+                let json_txs: Vec<serde_json::Value> = txs
+                    .iter()
+                    .map(|tx| {
+                        serde_json::json!({
+                            "hash": format!("{:#x}", tx.hash.value().unwrap_or_default()),
+                            "blockNumber": tx.block_number.as_number().map(|n| n.to::<u64>()),
+                            "timeStamp": tx.time_stamp,
+                            "dateTime": format_timestamp(&tx.time_stamp),
+                            "from": tx.from.value().map(|a| format!("{:#x}", a)),
+                            "to": tx.to.map(|a| format!("{:#x}", a)),
+                            "value": tx.value.to_string(),
+                            "valueEth": format_wei_to_eth(&tx.value.to_string()),
+                            "gas": tx.gas.to_string(),
+                            "gasPrice": tx.gas_price.map(|p| p.to_string()),
+                            "gasPriceGwei": tx.gas_price.map(|p| format_wei_to_gwei(&p.to_string())),
+                            "gasUsed": tx.gas_used.to_string(),
+                            "input": &tx.input,
+                            "methodId": tx.method_id.as_ref(),
+                            "functionName": tx.function_name.as_ref(),
+                            "contractAddress": tx.contract_address.map(|a| format!("{:#x}", a)),
+                            "isError": &tx.is_error,
+                            "txreceipt_status": &tx.tx_receipt_status,
+                            "confirmations": tx.confirmations,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json_txs)?);
             } else {
                 println!("Transactions for {}", address);
                 println!("{}", "─".repeat(80));
@@ -263,11 +423,16 @@ pub async fn handle(
                         .map(|a| format!("{:#x}", a))
                         .unwrap_or_else(|| "contract creation".to_string());
                     let hash_str = format!("{:#x}", tx.hash.value().unwrap_or_default());
+                    let block_num = tx
+                        .block_number
+                        .as_number()
+                        .map(|n| n.to::<u64>())
+                        .unwrap_or(0);
                     println!(
                         "{} {} | Block {} | {} {} → {}",
                         status,
                         &hash_str[..hash_str.len().min(12)],
-                        tx.block_number,
+                        block_num,
                         value_eth,
                         chain.native_symbol(),
                         truncate_addr(&to_addr)
@@ -320,9 +485,14 @@ pub async fn handle(
                         .value()
                         .map(|a| format!("{:#x}", a))
                         .unwrap_or_else(|| "n/a".to_string());
+                    let block_num = tx
+                        .block_number
+                        .as_number()
+                        .map(|n| n.to::<u64>())
+                        .unwrap_or(0);
                     println!(
                         "Block {} | {} {} | {} → {}",
-                        tx.block_number,
+                        block_num,
                         value_eth,
                         chain.native_symbol(),
                         truncate_addr(&format!("{:#x}", tx.from)),
@@ -383,9 +553,14 @@ pub async fn handle(
                         .as_ref()
                         .map(|a| format!("{:#x}", a))
                         .unwrap_or_else(|| "n/a".to_string());
+                    let block_num = tx
+                        .block_number
+                        .as_number()
+                        .map(|n| n.to::<u64>())
+                        .unwrap_or(0);
                     println!(
                         "Block {} | {} {} | {} → {}",
-                        tx.block_number,
+                        block_num,
                         tx.value,
                         symbol,
                         truncate_addr(&format!("{:#x}", tx.from)),
@@ -446,9 +621,14 @@ pub async fn handle(
                         .as_ref()
                         .map(|a| format!("{:#x}", a))
                         .unwrap_or_else(|| "n/a".to_string());
+                    let block_num = tx
+                        .block_number
+                        .as_number()
+                        .map(|n| n.to::<u64>())
+                        .unwrap_or(0);
                     println!(
                         "Block {} | Token ID {} | {} | {} → {}",
-                        tx.block_number,
+                        block_num,
                         tx.token_id,
                         name,
                         truncate_addr(&format!("{:#x}", tx.from)),
@@ -508,9 +688,14 @@ pub async fn handle(
                         .as_ref()
                         .map(|a| format!("{:#x}", a))
                         .unwrap_or_else(|| "n/a".to_string());
+                    let block_num = tx
+                        .block_number
+                        .as_number()
+                        .map(|n| n.to::<u64>())
+                        .unwrap_or(0);
                     println!(
                         "Block {} | Token ID {} | Qty {} | {} → {}",
-                        tx.block_number,
+                        block_num,
                         tx.token_id,
                         tx.token_value,
                         truncate_addr(&format!("{:#x}", tx.from)),
@@ -547,9 +732,14 @@ pub async fn handle(
                 println!("{}", "─".repeat(60));
                 for block in blocks.iter().take(20) {
                     let reward_eth = format_wei_to_eth(&block.block_reward.to_string());
+                    let block_num = block
+                        .block_number
+                        .as_number()
+                        .map(|n| n.to::<u64>())
+                        .unwrap_or(0);
                     println!(
                         "Block {} | Reward: {} {}",
-                        block.block_number,
+                        block_num,
                         reward_eth,
                         chain.native_symbol()
                     );
@@ -594,4 +784,80 @@ fn truncate_addr(addr: &str) -> String {
     } else {
         addr.to_string()
     }
+}
+
+/// Format wei to gwei string (shows up to 2 decimal places)
+fn format_wei_to_gwei(wei: &str) -> String {
+    // Parse wei and divide by 1e9 to get gwei
+    wei.parse::<u128>()
+        .map(|w| {
+            let gwei = w / 1_000_000_000;
+            let remainder = (w % 1_000_000_000) / 10_000_000; // 2 decimal places
+            if remainder == 0 {
+                format!("{}", gwei)
+            } else {
+                format!("{}.{:02}", gwei, remainder)
+            }
+        })
+        .unwrap_or_else(|_| wei.to_string())
+}
+
+/// Format unix timestamp to human-readable date (simple implementation)
+fn format_timestamp(ts: &str) -> String {
+    ts.parse::<i64>()
+        .ok()
+        .map(|secs| {
+            // Simple date calculation from unix timestamp
+            let days_since_epoch = secs / 86400;
+            let time_of_day = secs % 86400;
+            let hours = time_of_day / 3600;
+            let minutes = (time_of_day % 3600) / 60;
+            let seconds = time_of_day % 60;
+
+            // Calculate year, month, day from days since 1970-01-01
+            let (year, month, day) = days_to_ymd(days_since_epoch);
+            format!(
+                "{:02}/{:02}/{} {:02}:{:02}:{:02} UTC",
+                day, month, year, hours, minutes, seconds
+            )
+        })
+        .unwrap_or_else(|| ts.to_string())
+}
+
+/// Convert days since epoch to year, month, day
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Simplified algorithm for dates after 1970
+    let mut remaining = days;
+    let mut year = 1970i64;
+
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining < days_in_year {
+            break;
+        }
+        remaining -= days_in_year;
+        year += 1;
+    }
+
+    let leap = is_leap_year(year);
+    let days_in_months: [i64; 12] = if leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1u32;
+    for &days_in_month in &days_in_months {
+        if remaining < days_in_month {
+            break;
+        }
+        remaining -= days_in_month;
+        month += 1;
+    }
+
+    (year, month, (remaining + 1) as u32)
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
