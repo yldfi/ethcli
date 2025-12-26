@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0](https://github.com/michaeldim/ethcli/compare/v0.10.0...v0.11.0) (2025-12-26)
+
+
+### Features
+
+* add address book, Multicall3 batching, and smart endpoint selection ([fc7d8c0](https://github.com/michaeldim/ethcli/commit/fc7d8c0f448b967979eb0d4866d8d98c50558f0f))
+
+
+### Performance Improvements
+
+* parallelize transaction and receipt fetching ([ccf9e19](https://github.com/michaeldim/ethcli/commit/ccf9e19912bea2da0f0dd515ef4e497ba55574d8))
+
 ## [0.10.0](https://github.com/michaeldim/ethcli/compare/v0.9.0...v0.10.0) (2025-12-25)
 
 
