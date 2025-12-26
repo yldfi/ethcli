@@ -217,17 +217,16 @@ impl TxAnalyzer {
 
     /// Fetch raw transaction data
     async fn fetch_raw_data(&self, hash: B256) -> Result<RawTxData> {
-        // Fetch transaction and receipt in parallel would be better but let's keep it simple
-        let tx = self
-            .pool
-            .get_transaction(hash)
-            .await?
+        // Fetch transaction and receipt in parallel
+        let (tx_result, receipt_result) = tokio::join!(
+            self.pool.get_transaction(hash),
+            self.pool.get_transaction_receipt(hash)
+        );
+
+        let tx = tx_result?
             .ok_or_else(|| format!("Transaction not found: {:#x}", hash))?;
 
-        let receipt = self
-            .pool
-            .get_transaction_receipt(hash)
-            .await?
+        let receipt = receipt_result?
             .ok_or_else(|| format!("Receipt not found: {:#x}", hash))?;
 
         let logs = receipt.inner.logs().to_vec();
