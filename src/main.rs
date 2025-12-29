@@ -84,6 +84,14 @@ async fn main() -> anyhow::Result<()> {
     // Parse chain once for use in handlers
     let chain: Chain = cli.chain.parse()?;
 
+    // Load config file and merge etherscan key (CLI takes precedence over config)
+    let config_file = load_config_with_warning();
+    let etherscan_key = cli.etherscan_key.clone().or_else(|| {
+        config_file
+            .as_ref()
+            .and_then(|c| c.etherscan_api_key.clone())
+    });
+
     // Handle subcommands
     match &cli.command {
         Commands::Logs(args) => {
@@ -96,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
             return ethcli::cli::account::handle(
                 action,
                 chain,
-                cli.etherscan_key.clone(),
+                etherscan_key.clone(),
                 cli.quiet,
             )
             .await;
@@ -108,21 +116,21 @@ async fn main() -> anyhow::Result<()> {
             return ethcli::cli::contract::handle(
                 action,
                 chain,
-                cli.etherscan_key.clone(),
+                etherscan_key.clone(),
                 cli.quiet,
             )
             .await;
         }
         Commands::Token { action } => {
-            return ethcli::cli::token::handle(action, chain, cli.etherscan_key.clone(), cli.quiet)
+            return ethcli::cli::token::handle(action, chain, etherscan_key.clone(), cli.quiet)
                 .await;
         }
         Commands::Gas { action } => {
-            return ethcli::cli::gas::handle(action, chain, cli.etherscan_key.clone(), cli.quiet)
+            return ethcli::cli::gas::handle(action, chain, etherscan_key.clone(), cli.quiet)
                 .await;
         }
         Commands::Sig { action } => {
-            return ethcli::cli::sig::handle(action, chain, cli.etherscan_key.clone(), cli.quiet)
+            return ethcli::cli::sig::handle(action, chain, etherscan_key.clone(), cli.quiet)
                 .await;
         }
         Commands::Endpoints { action } => {
