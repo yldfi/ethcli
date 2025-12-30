@@ -101,37 +101,25 @@ async fn main() -> anyhow::Result<()> {
             return handle_tx(args, &cli).await;
         }
         Commands::Account { action } => {
-            return ethcli::cli::account::handle(
-                action,
-                chain,
-                etherscan_key.clone(),
-                cli.quiet,
-            )
-            .await;
+            return ethcli::cli::account::handle(action, chain, etherscan_key.clone(), cli.quiet)
+                .await;
         }
         Commands::Address { action } => {
             return ethcli::cli::address::handle(action, cli.quiet);
         }
         Commands::Contract { action } => {
-            return ethcli::cli::contract::handle(
-                action,
-                chain,
-                etherscan_key.clone(),
-                cli.quiet,
-            )
-            .await;
+            return ethcli::cli::contract::handle(action, chain, etherscan_key.clone(), cli.quiet)
+                .await;
         }
         Commands::Token { action } => {
             return ethcli::cli::token::handle(action, chain, etherscan_key.clone(), cli.quiet)
                 .await;
         }
         Commands::Gas { action } => {
-            return ethcli::cli::gas::handle(action, chain, etherscan_key.clone(), cli.quiet)
-                .await;
+            return ethcli::cli::gas::handle(action, chain, etherscan_key.clone(), cli.quiet).await;
         }
         Commands::Sig { action } => {
-            return ethcli::cli::sig::handle(action, chain, etherscan_key.clone(), cli.quiet)
-                .await;
+            return ethcli::cli::sig::handle(action, chain, etherscan_key.clone(), cli.quiet).await;
         }
         Commands::Endpoints { action } => {
             return handle_endpoints(action, &cli).await;

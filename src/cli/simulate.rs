@@ -683,10 +683,13 @@ async fn simulate_via_anvil(
     use std::process::Stdio;
     use tokio::time::{sleep, Duration};
 
-    let fork_url = rpc_url.clone().or_else(|| {
-        // Try to get URL from configured endpoints (smart selection)
-        get_rpc_url(Chain::Ethereum).ok()
-    }).unwrap_or_else(|| "https://eth.llamarpc.com".to_string());
+    let fork_url = rpc_url
+        .clone()
+        .or_else(|| {
+            // Try to get URL from configured endpoints (smart selection)
+            get_rpc_url(Chain::Ethereum).ok()
+        })
+        .unwrap_or_else(|| "https://eth.llamarpc.com".to_string());
 
     if !quiet {
         eprintln!("Starting Anvil fork of {}...", fork_url);

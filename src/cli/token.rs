@@ -4,8 +4,8 @@
 
 use crate::config::{AddressBook, Chain};
 use crate::etherscan::TokenMetadataCache;
-use crate::rpc::multicall::{selectors, MulticallBuilder};
 use crate::rpc::get_rpc_endpoint;
+use crate::rpc::multicall::{selectors, MulticallBuilder};
 use alloy::primitives::Address;
 use clap::Subcommand;
 use std::str::FromStr;
@@ -131,9 +131,21 @@ pub async fn handle(
                         println!("Label:    {}", lbl);
                     }
                     println!("Address:  {}", addr_str);
-                    println!("Name:     {}", cached.name.as_deref().unwrap_or("(unknown)"));
-                    println!("Symbol:   {}", cached.symbol.as_deref().unwrap_or("(unknown)"));
-                    println!("Decimals: {}", cached.decimals.map(|d| d.to_string()).unwrap_or_else(|| "(unknown)".to_string()));
+                    println!(
+                        "Name:     {}",
+                        cached.name.as_deref().unwrap_or("(unknown)")
+                    );
+                    println!(
+                        "Symbol:   {}",
+                        cached.symbol.as_deref().unwrap_or("(unknown)")
+                    );
+                    println!(
+                        "Decimals: {}",
+                        cached
+                            .decimals
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| "(unknown)".to_string())
+                    );
                     println!("Supply:   {}", formatted_supply);
 
                     if let Some(explorer) = chain.explorer_url() {
@@ -160,7 +172,7 @@ pub async fn handle(
             // Execute with retry (up to 3 retries with exponential backoff)
             let results = multicall.execute_with_retry(provider, 3).await?;
 
-            let name = results.get(0).and_then(|r| r.decode_string());
+            let name = results.first().and_then(|r| r.decode_string());
             let symbol = results.get(1).and_then(|r| r.decode_string());
             let decimals = results.get(2).and_then(|r| r.decode_uint8());
             let total_supply = results.get(3).and_then(|r| r.decode_uint256());
@@ -203,7 +215,12 @@ pub async fn handle(
                 println!("Address:  {}", addr_str);
                 println!("Name:     {}", name.as_deref().unwrap_or("(unknown)"));
                 println!("Symbol:   {}", symbol.as_deref().unwrap_or("(unknown)"));
-                println!("Decimals: {}", decimals.map(|d| d.to_string()).unwrap_or_else(|| "(unknown)".to_string()));
+                println!(
+                    "Decimals: {}",
+                    decimals
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "(unknown)".to_string())
+                );
                 println!("Supply:   {}", formatted_supply);
 
                 if let Some(explorer) = chain.explorer_url() {

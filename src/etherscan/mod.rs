@@ -8,5 +8,7 @@
 pub mod cache;
 mod client;
 
-pub use cache::{CacheData, CacheEntry, CacheStats, SignatureCache, TokenCacheEntry, TokenMetadataCache};
+pub use cache::{
+    CacheData, CacheEntry, CacheStats, SignatureCache, TokenCacheEntry, TokenMetadataCache,
+};
 pub use client::Client;

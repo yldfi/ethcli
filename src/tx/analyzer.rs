@@ -223,11 +223,9 @@ impl TxAnalyzer {
             self.pool.get_transaction_receipt(hash)
         );
 
-        let tx = tx_result?
-            .ok_or_else(|| format!("Transaction not found: {:#x}", hash))?;
+        let tx = tx_result?.ok_or_else(|| format!("Transaction not found: {:#x}", hash))?;
 
-        let receipt = receipt_result?
-            .ok_or_else(|| format!("Receipt not found: {:#x}", hash))?;
+        let receipt = receipt_result?.ok_or_else(|| format!("Receipt not found: {:#x}", hash))?;
 
         let logs = receipt.inner.logs().to_vec();
 

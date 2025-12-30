@@ -71,8 +71,8 @@ impl RetryConfig {
 
     /// Calculate delay for a given attempt number (0-indexed)
     fn delay_for_attempt(&self, attempt: u32) -> Duration {
-        let base_delay = self.initial_delay.as_millis() as f64
-            * self.backoff_multiplier.powi(attempt as i32);
+        let base_delay =
+            self.initial_delay.as_millis() as f64 * self.backoff_multiplier.powi(attempt as i32);
         let capped_delay = base_delay.min(self.max_delay.as_millis() as f64);
 
         let final_delay = if self.jitter {
@@ -158,10 +158,7 @@ where
 /// Simple retry wrapper for operations that return Result with any error type
 ///
 /// This version always retries on any error up to max_retries times.
-pub async fn with_simple_retry<T, E, F, Fut>(
-    max_retries: u32,
-    mut operation: F,
-) -> Result<T, E>
+pub async fn with_simple_retry<T, E, F, Fut>(max_retries: u32, mut operation: F) -> Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
