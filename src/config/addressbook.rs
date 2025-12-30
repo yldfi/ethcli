@@ -173,10 +173,7 @@ impl AddressBook {
             .iter()
             .filter(|(label, entry)| {
                 label.contains(&query)
-                    || entry
-                        .address
-                        .to_lowercase()
-                        .contains(&query)
+                    || entry.address.to_lowercase().contains(&query)
                     || entry
                         .description
                         .as_ref()
@@ -190,7 +187,6 @@ impl AddressBook {
         entries
     }
 }
-
 
 #[cfg(test)]
 mod tests {

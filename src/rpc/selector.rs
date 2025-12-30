@@ -65,7 +65,10 @@ pub fn get_rpc_endpoint_from_config(config: &ConfigFile, chain: Chain) -> anyhow
             .cloned()
             .expect("top_endpoints is not empty")
     } else {
-        top_endpoints.into_iter().next().expect("top_endpoints is not empty")
+        top_endpoints
+            .into_iter()
+            .next()
+            .expect("top_endpoints is not empty")
     };
 
     Endpoint::new(selected, 30, None)
@@ -117,7 +120,10 @@ pub fn get_rpc_url_from_config(config: &ConfigFile, chain: Chain) -> anyhow::Res
             .cloned()
             .expect("top_endpoints is not empty")
     } else {
-        top_endpoints.into_iter().next().expect("top_endpoints is not empty")
+        top_endpoints
+            .into_iter()
+            .next()
+            .expect("top_endpoints is not empty")
     };
 
     Ok(selected.url)

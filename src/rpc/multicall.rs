@@ -72,10 +72,7 @@ impl MulticallBuilder {
     }
 
     /// Execute the multicall and return results
-    pub async fn execute<P: Provider>(
-        self,
-        provider: &P,
-    ) -> anyhow::Result<Vec<MulticallResult>> {
+    pub async fn execute<P: Provider>(self, provider: &P) -> anyhow::Result<Vec<MulticallResult>> {
         self.execute_with_retry(provider, 0).await
     }
 

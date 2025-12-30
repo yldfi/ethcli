@@ -4,8 +4,8 @@
 
 use crate::config::{AddressBook, Chain};
 use crate::etherscan::Client;
-use crate::rpc::multicall::{selectors, MulticallBuilder, MULTICALL3_ADDRESS};
 use crate::rpc::get_rpc_endpoint;
+use crate::rpc::multicall::{selectors, MulticallBuilder, MULTICALL3_ADDRESS};
 use alloy::primitives::Address;
 use alloy::providers::Provider;
 use clap::Subcommand;
@@ -974,4 +974,3 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
 fn is_leap_year(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
-
