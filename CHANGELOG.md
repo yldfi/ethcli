@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/michaeldim/ethcli/compare/v0.11.1...v0.12.0) (2025-12-30)
+
+
+### Features
+
+* add --since option and fix tuple[] ABI parsing ([c3ba737](https://github.com/michaeldim/ethcli/commit/c3ba7374240b07ff1be6ec4b8e4adc33e23f0b10))
+
 ## [0.11.1](https://github.com/michaeldim/ethcli/compare/v0.11.0...v0.11.1) (2025-12-30)
 
 
