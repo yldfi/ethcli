@@ -20,8 +20,13 @@ pub struct LogsArgs {
     pub abi: Option<PathBuf>,
 
     /// Start block number (omit or use "auto" to start from contract creation)
-    #[arg(short = 'f', long)]
+    #[arg(short = 'f', long, conflicts_with = "since")]
     pub from_block: Option<String>,
+
+    /// Start from relative time ago (e.g., "30d", "6h", "2w", "90m")
+    /// Supported units: m/min/minutes, h/hours, d/days, w/weeks
+    #[arg(long, conflicts_with = "from_block")]
+    pub since: Option<String>,
 
     /// End block number (or "latest")
     #[arg(short = 't', long, default_value = "latest")]

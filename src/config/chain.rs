@@ -95,6 +95,26 @@ impl Chain {
         }
     }
 
+    /// Get average block time in seconds (approximate)
+    /// Used for converting relative time to block numbers
+    pub fn avg_block_time_secs(&self) -> f64 {
+        match self {
+            Chain::Ethereum => 12.0,  // ~12 seconds post-merge
+            Chain::Polygon => 2.0,    // ~2 seconds
+            Chain::Arbitrum => 0.25,  // ~250ms (L2)
+            Chain::Optimism => 2.0,   // ~2 seconds (L2)
+            Chain::Base => 2.0,       // ~2 seconds (L2, OP stack)
+            Chain::Bsc => 3.0,        // ~3 seconds
+            Chain::Avalanche => 2.0,  // ~2 seconds
+            Chain::Custom(_) => 12.0, // Default to Ethereum-like
+        }
+    }
+
+    /// Calculate approximate blocks for a given duration in seconds
+    pub fn blocks_for_duration(&self, duration_secs: f64) -> u64 {
+        (duration_secs / self.avg_block_time_secs()).ceil() as u64
+    }
+
     /// Create from chain ID
     pub fn from_chain_id(id: ChainId) -> Self {
         match id {

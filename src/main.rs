@@ -20,6 +20,45 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+/// Parse a duration string like "30d", "6h", "2w", "90m" into seconds
+///
+/// Supported units:
+/// - m, min, minutes: minutes
+/// - h, hr, hours: hours
+/// - d, days: days
+/// - w, weeks: weeks
+fn parse_duration_string(s: &str) -> anyhow::Result<f64> {
+    let s = s.trim().to_lowercase();
+
+    // Try to find where the number ends and unit begins
+    let (num_str, unit) = if let Some(pos) = s.find(|c: char| c.is_alphabetic()) {
+        (&s[..pos], s[pos..].trim())
+    } else {
+        // No unit found, assume days for backwards compatibility
+        (s.as_str(), "d")
+    };
+
+    let value: f64 = num_str
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid duration number: '{}'", num_str))?;
+
+    let seconds = match unit {
+        "m" | "min" | "mins" | "minute" | "minutes" => value * 60.0,
+        "h" | "hr" | "hrs" | "hour" | "hours" => value * 3600.0,
+        "d" | "day" | "days" => value * 86400.0,
+        "w" | "wk" | "wks" | "week" | "weeks" => value * 604800.0,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unknown duration unit: '{}'. Use m/h/d/w (e.g., 30d, 6h, 2w, 90m)",
+                unit
+            ))
+        }
+    };
+
+    Ok(seconds)
+}
+
 /// Load config file with proper error reporting
 ///
 /// Returns None if file doesn't exist, but warns on parse errors
@@ -186,11 +225,32 @@ async fn run_logs(args: &LogsArgs, cli: &Cli) -> anyhow::Result<()> {
         args.chunk_size,
     )?;
 
-    // Parse from_block (can be number, "auto", or omitted for auto-detect)
-    let (from_block, auto_from_block) = match &args.from_block {
-        Some(s) if s.to_lowercase() == "auto" => (0, true),
-        Some(s) => (s.parse::<u64>()?, false),
-        None => (0, true), // Default to auto-detect from contract creation
+    // Parse from_block (can be number, "auto", --since, or omitted for auto-detect)
+    let (from_block, auto_from_block) = if let Some(since_str) = &args.since {
+        // Parse the duration string and calculate from_block
+        let duration_secs = parse_duration_string(since_str)?;
+        let blocks_back = chain.blocks_for_duration(duration_secs);
+
+        // Get current block number via a quick RPC call
+        let quick_pool = RpcPool::new(chain, &rpc_config)?;
+        let current_block = quick_pool.get_block_number().await?;
+
+        let target_block = current_block.saturating_sub(blocks_back);
+
+        if !cli.quiet {
+            eprintln!(
+                "Using --since {}: ~{} blocks back from {} to block {}",
+                since_str, blocks_back, current_block, target_block
+            );
+        }
+
+        (target_block, false)
+    } else {
+        match &args.from_block {
+            Some(s) if s.to_lowercase() == "auto" => (0, true),
+            Some(s) => (s.parse::<u64>()?, false),
+            None => (0, true), // Default to auto-detect from contract creation
+        }
     };
 
     // Build main config

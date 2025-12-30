@@ -158,7 +158,7 @@ impl LogDecoder {
         let mut all_names = Vec::new();
 
         for input in &event.inputs {
-            let ty = Self::parse_type(&input.ty)?;
+            let ty = Self::resolve_event_param_type(input)?;
             all_types.push(ty.clone());
             all_names.push(input.name.clone());
 
@@ -171,8 +171,12 @@ impl LogDecoder {
             }
         }
 
-        // Build canonical signature
-        let param_types: Vec<&str> = event.inputs.iter().map(|i| i.ty.as_str()).collect();
+        // Build canonical signature using resolved types
+        let param_types: Vec<String> = event
+            .inputs
+            .iter()
+            .map(Self::canonical_type_string)
+            .collect();
         let canonical = format!("{}({})", event.name, param_types.join(","));
 
         Ok(EventInfo {
@@ -186,6 +190,121 @@ impl LogDecoder {
             all_names,
             indexed_explicit: true, // ABI always has explicit indexed info
         })
+    }
+
+    /// Resolve an EventParam type, handling tuples with components
+    fn resolve_event_param_type(param: &alloy::json_abi::EventParam) -> Result<DynSolType> {
+        use alloy::json_abi::Param;
+
+        // Helper to resolve Param types recursively
+        fn resolve_param_type(param: &Param) -> Result<DynSolType> {
+            let ty_str = param.ty.as_str();
+
+            // Check if this is a tuple type (has components)
+            if !param.components.is_empty() {
+                // Build tuple type from components
+                let mut component_types = Vec::new();
+                for comp in &param.components {
+                    component_types.push(resolve_param_type(comp)?);
+                }
+                let tuple_type = DynSolType::Tuple(component_types);
+
+                // Check if it's an array of tuples
+                if ty_str.ends_with("[]") {
+                    Ok(DynSolType::Array(Box::new(tuple_type)))
+                } else if ty_str.contains('[') {
+                    // Fixed size array: tuple[N]
+                    if let Some(start) = ty_str.rfind('[') {
+                        if let Some(end) = ty_str.rfind(']') {
+                            let size_str = &ty_str[start + 1..end];
+                            if let Ok(size) = size_str.parse::<usize>() {
+                                return Ok(DynSolType::FixedArray(Box::new(tuple_type), size));
+                            }
+                        }
+                    }
+                    // Fallback to dynamic array if parsing fails
+                    Ok(DynSolType::Array(Box::new(tuple_type)))
+                } else {
+                    Ok(tuple_type)
+                }
+            } else {
+                // Not a tuple, parse directly
+                DynSolType::parse(ty_str).map_err(|e| {
+                    AbiError::ParseError(format!("Invalid type '{}': {}", ty_str, e)).into()
+                })
+            }
+        }
+
+        // Convert EventParam to Param-like structure for recursive resolution
+        let ty_str = param.ty.as_str();
+
+        if !param.components.is_empty() {
+            // Build tuple type from components
+            let mut component_types = Vec::new();
+            for comp in &param.components {
+                component_types.push(resolve_param_type(comp)?);
+            }
+            let tuple_type = DynSolType::Tuple(component_types);
+
+            // Check if it's an array of tuples
+            if ty_str.ends_with("[]") {
+                Ok(DynSolType::Array(Box::new(tuple_type)))
+            } else if ty_str.contains('[') {
+                // Fixed size array: tuple[N]
+                if let Some(start) = ty_str.rfind('[') {
+                    if let Some(end) = ty_str.rfind(']') {
+                        let size_str = &ty_str[start + 1..end];
+                        if let Ok(size) = size_str.parse::<usize>() {
+                            return Ok(DynSolType::FixedArray(Box::new(tuple_type), size));
+                        }
+                    }
+                }
+                // Fallback to dynamic array if parsing fails
+                Ok(DynSolType::Array(Box::new(tuple_type)))
+            } else {
+                Ok(tuple_type)
+            }
+        } else {
+            // Not a tuple, parse directly
+            Self::parse_type(ty_str)
+        }
+    }
+
+    /// Build canonical type string for an EventParam (for event signature)
+    fn canonical_type_string(param: &alloy::json_abi::EventParam) -> String {
+        use alloy::json_abi::Param;
+
+        fn param_canonical(param: &Param) -> String {
+            if !param.components.is_empty() {
+                // Tuple: build (type1,type2,...)
+                let inner: Vec<String> = param.components.iter().map(param_canonical).collect();
+                let tuple_str = format!("({})", inner.join(","));
+
+                // Handle array suffix
+                let ty = param.ty.as_str();
+                if let Some(bracket_pos) = ty.find('[') {
+                    format!("{}{}", tuple_str, &ty[bracket_pos..])
+                } else {
+                    tuple_str
+                }
+            } else {
+                param.ty.clone()
+            }
+        }
+
+        if !param.components.is_empty() {
+            let inner: Vec<String> = param.components.iter().map(param_canonical).collect();
+            let tuple_str = format!("({})", inner.join(","));
+
+            let ty = param.ty.as_str();
+            if let Some(bracket_pos) = ty.find('[') {
+                format!("{}{}", tuple_str, &ty[bracket_pos..])
+            } else {
+                tuple_str
+            }
+        } else {
+            param.ty.clone()
+        }
     }
 
     /// Convert an EventSignature to EventInfo
