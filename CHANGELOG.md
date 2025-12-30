@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.1](https://github.com/michaeldim/ethcli/compare/v0.11.0...v0.11.1) (2025-12-30)
+
+
+### Bug Fixes
+
+* read etherscan_api_key from config file for all commands ([876ad37](https://github.com/michaeldim/ethcli/commit/876ad371fda7337807f49c79743ce0d3cc64460b))
+* resolve clippy and formatting issues ([baf938b](https://github.com/michaeldim/ethcli/commit/baf938ba98a7505b8c358b51b2e5cca6462468be))
+
 ## [0.11.0](https://github.com/michaeldim/ethcli/compare/v0.10.0...v0.11.0) (2025-12-26)
 
 
