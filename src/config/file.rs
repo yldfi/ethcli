@@ -5,6 +5,9 @@ use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// Configuration file structure
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigFile {
@@ -167,6 +170,15 @@ impl ConfigFile {
 
         std::fs::write(path, content)
             .map_err(|e| ConfigError::InvalidFile(format!("Failed to write config: {}", e)))?;
+
+        // Set restrictive permissions (0600) on Unix systems since config may contain API keys
+        #[cfg(unix)]
+        {
+            let permissions = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, permissions).map_err(|e| {
+                ConfigError::InvalidFile(format!("Failed to set config permissions: {}", e))
+            })?;
+        }
 
         Ok(())
     }

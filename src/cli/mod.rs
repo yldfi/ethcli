@@ -17,7 +17,48 @@ pub mod simulate;
 pub mod token;
 pub mod tx;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use std::fmt;
+
+/// Output format for command results
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// JSON output (default for most commands)
+    #[default]
+    Json,
+    /// Human-readable table/pretty format
+    #[value(alias = "pretty")]
+    Table,
+    /// Newline-delimited JSON (for streaming)
+    Ndjson,
+}
+
+impl fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OutputFormat::Json => write!(f, "json"),
+            OutputFormat::Table => write!(f, "table"),
+            OutputFormat::Ndjson => write!(f, "ndjson"),
+        }
+    }
+}
+
+impl OutputFormat {
+    /// Check if this format is JSON
+    pub fn is_json(&self) -> bool {
+        matches!(self, OutputFormat::Json)
+    }
+
+    /// Check if this format is table/pretty
+    pub fn is_table(&self) -> bool {
+        matches!(self, OutputFormat::Table)
+    }
+
+    /// Check if this format is NDJSON
+    pub fn is_ndjson(&self) -> bool {
+        matches!(self, OutputFormat::Ndjson)
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "ethcli")]
@@ -78,36 +119,43 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Fetch historical logs from contracts
+    #[command(visible_alias = "log")]
     Logs(Box<logs::LogsArgs>),
 
     /// Analyze transaction(s)
+    #[command(visible_alias = "t")]
     Tx(tx::TxArgs),
 
     /// Account operations (balance, transactions, transfers)
+    #[command(visible_alias = "acc")]
     Account {
         #[command(subcommand)]
         action: account::AccountCommands,
     },
 
     /// Address book (save and lookup addresses by label)
+    #[command(visible_alias = "addr")]
     Address {
         #[command(subcommand)]
         action: address::AddressCommands,
     },
 
     /// Contract operations (ABI, source, creation)
+    #[command(visible_alias = "c")]
     Contract {
         #[command(subcommand)]
         action: contract::ContractCommands,
     },
 
     /// Token operations (info, holders, balance)
+    #[command(visible_alias = "tok")]
     Token {
         #[command(subcommand)]
         action: token::TokenCommands,
     },
 
     /// Gas price oracle and estimates
+    #[command(visible_alias = "g")]
     Gas {
         #[command(subcommand)]
         action: gas::GasCommands,
@@ -120,12 +168,14 @@ pub enum Commands {
     },
 
     /// Manage RPC endpoints
+    #[command(visible_alias = "ep")]
     Endpoints {
         #[command(subcommand)]
         action: endpoints::EndpointCommands,
     },
 
     /// Manage configuration
+    #[command(visible_alias = "cfg")]
     Config {
         #[command(subcommand)]
         action: config::ConfigCommands,

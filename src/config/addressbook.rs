@@ -8,6 +8,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// Address book entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressEntry {
@@ -80,6 +83,14 @@ impl AddressBook {
             toml::to_string_pretty(self).map_err(|e| format!("Failed to serialize: {}", e))?;
 
         std::fs::write(path, content).map_err(|e| format!("Failed to write: {}", e))?;
+
+        // Set restrictive permissions (0600) on Unix systems
+        #[cfg(unix)]
+        {
+            let permissions = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, permissions)
+                .map_err(|e| format!("Failed to set permissions: {}", e))?;
+        }
 
         Ok(())
     }

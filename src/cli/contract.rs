@@ -2,6 +2,7 @@
 //!
 //! Fetch ABI, source code, and creation info for contracts
 
+use super::OutputFormat;
 use crate::config::{Chain, ConfigFile, EndpointConfig};
 use crate::etherscan::{Client, SignatureCache};
 use crate::rpc::Endpoint;
@@ -111,6 +112,7 @@ pub enum ContractCommands {
     },
 
     /// Get verified source code
+    #[command(visible_alias = "src")]
     Source {
         /// Contract address
         address: String,
@@ -121,13 +123,14 @@ pub enum ContractCommands {
     },
 
     /// Get contract creation info (deployer, tx hash)
+    #[command(visible_alias = "info")]
     Creation {
         /// Contract address
         address: String,
 
-        /// Output format (pretty, json)
-        #[arg(long, short = 'f', default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short = 'f', value_enum, default_value = "table")]
+        format: OutputFormat,
     },
 
     /// Call a contract function (auto-fetches ABI)
@@ -325,7 +328,7 @@ pub async fn handle(
             }
         }
 
-        ContractCommands::Creation { address, output } => {
+        ContractCommands::Creation { address, format } => {
             let addr = Address::from_str(address)
                 .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
 
@@ -338,7 +341,7 @@ pub async fn handle(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to fetch creation data: {}", e))?;
 
-            if output == "json" {
+            if format.is_json() {
                 println!("{}", serde_json::to_string_pretty(&creation)?);
             } else {
                 println!("Contract Creation Info");

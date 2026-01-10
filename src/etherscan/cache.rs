@@ -9,9 +9,23 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+/// Write file with restrictive permissions (0600) on Unix
+fn write_with_permissions(path: &Path, content: &str) -> std::io::Result<()> {
+    fs::write(path, content)?;
+    #[cfg(unix)]
+    {
+        let permissions = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
 
 /// Maximum number of entries before triggering cleanup
 const MAX_CACHE_ENTRIES: usize = 10_000;
@@ -19,6 +33,8 @@ const MAX_CACHE_ENTRIES: usize = 10_000;
 const CLEANUP_INTERVAL: u64 = 100;
 /// ABI cache TTL in seconds (90 days)
 const ABI_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+/// Negative cache TTL in seconds (1 day) - for "not found" entries
+const NEGATIVE_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// Cache entry with timestamp
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +55,10 @@ pub struct CacheData {
     /// Contract ABIs by chain_address key
     #[serde(default)]
     pub abis: HashMap<String, AbiCacheEntry>,
+    /// Negative cache: selectors/topics that were looked up but not found
+    /// Stores Unix timestamp of when the lookup failed
+    #[serde(default)]
+    pub not_found: HashMap<String, u64>,
 }
 
 /// ABI cache entry with timestamp and metadata
@@ -145,7 +165,7 @@ impl SignatureCache {
 
         let data = self.data.read();
         let content = serde_json::to_string_pretty(&*data)?;
-        fs::write(&self.path, content)?;
+        write_with_permissions(&self.path, &content)?;
         self.dirty.store(false, Ordering::Release);
         Ok(())
     }
@@ -156,6 +176,7 @@ impl SignatureCache {
         let now = Self::now();
         let ttl_secs = self.ttl.as_secs();
         let abi_ttl_secs = ABI_TTL_SECS;
+        let negative_ttl_secs = NEGATIVE_CACHE_TTL_SECS;
 
         data.events
             .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
@@ -163,6 +184,8 @@ impl SignatureCache {
             .retain(|_, e| now.saturating_sub(e.timestamp) <= ttl_secs);
         data.abis
             .retain(|_, e| now.saturating_sub(e.timestamp) <= abi_ttl_secs);
+        data.not_found
+            .retain(|_, &mut ts| now.saturating_sub(ts) <= negative_ttl_secs);
     }
 
     /// Get current Unix timestamp
@@ -274,6 +297,42 @@ impl SignatureCache {
             }
         }
         self.maybe_save();
+    }
+
+    // ========================================================================
+    // Negative Cache Methods
+    // ========================================================================
+
+    /// Check if a key is in the negative cache (recently looked up but not found)
+    ///
+    /// Returns true if we should skip looking this up again
+    pub fn is_not_found(&self, key: &str) -> bool {
+        let data = self.data.read();
+        let key_lower = key.to_lowercase();
+        if let Some(&timestamp) = data.not_found.get(&key_lower) {
+            let now = Self::now();
+            // Check if the negative cache entry is still valid
+            now.saturating_sub(timestamp) <= NEGATIVE_CACHE_TTL_SECS
+        } else {
+            false
+        }
+    }
+
+    /// Mark a key as not found (for negative caching)
+    pub fn set_not_found(&self, key: &str) {
+        {
+            let mut data = self.data.write();
+            data.not_found.insert(key.to_lowercase(), Self::now());
+        }
+        self.maybe_save();
+    }
+
+    /// Remove a key from the negative cache (when it's been found elsewhere)
+    pub fn clear_not_found(&self, key: &str) {
+        {
+            let mut data = self.data.write();
+            data.not_found.remove(&key.to_lowercase());
+        }
     }
 
     // ========================================================================
@@ -429,7 +488,7 @@ impl SignatureCache {
         let data = self.data.read();
         let _ = serde_json::to_string_pretty(&*data)
             .ok()
-            .and_then(|content| fs::write(&self.path, content).ok());
+            .and_then(|content| write_with_permissions(&self.path, &content).ok());
     }
 
     /// Clear all cached data
@@ -439,6 +498,7 @@ impl SignatureCache {
             data.events.clear();
             data.functions.clear();
             data.abis.clear();
+            data.not_found.clear();
         }
         self.maybe_save();
     }
@@ -764,7 +824,7 @@ impl TokenMetadataCache {
 
         let data = self.data.read();
         if let Ok(json) = serde_json::to_string_pretty(&*data) {
-            let _ = fs::write(&self.path, json);
+            let _ = write_with_permissions(&self.path, &json);
         }
     }
 }

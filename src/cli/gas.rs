@@ -1,5 +1,6 @@
 //! Gas oracle and estimation commands
 
+use super::OutputFormat;
 use crate::config::Chain;
 use crate::etherscan::Client;
 use alloy::primitives::U256;
@@ -9,9 +10,9 @@ use clap::Subcommand;
 pub enum GasCommands {
     /// Get current gas prices from the gas oracle
     Oracle {
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Estimate confirmation time for a given gas price
@@ -40,7 +41,7 @@ pub async fn handle(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to fetch gas oracle: {}", e))?;
 
-            if output == "json" {
+            if output.is_json() {
                 // Manually construct JSON since GasOracle doesn't implement Serialize
                 let json = serde_json::json!({
                     "safe_gas_price": oracle.safe_gas_price.to_string(),

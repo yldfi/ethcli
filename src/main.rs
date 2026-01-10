@@ -449,7 +449,7 @@ async fn add_timestamps_to_logs(
     let mut failed_count = 0usize;
 
     // Process in batches to avoid overwhelming the RPC
-    const BATCH_SIZE: usize = 10;
+    const BATCH_SIZE: usize = 50;
     for batch in block_numbers.chunks(BATCH_SIZE) {
         let futures: Vec<_> = batch
             .iter()
@@ -1274,35 +1274,31 @@ async fn handle_tx(args: &TxArgs, cli: &Cli) -> anyhow::Result<()> {
     let elapsed = start.elapsed();
 
     // Output
-    match args.output.as_str() {
-        "json" => {
-            if analyses.len() == 1 {
-                let json = serde_json::to_string_pretty(&analyses[0])?;
-                println!("{}", json);
-            } else {
-                let json = serde_json::to_string_pretty(&analyses)?;
-                println!("{}", json);
-            }
+    if args.output.is_json() {
+        if analyses.len() == 1 {
+            let json = serde_json::to_string_pretty(&analyses[0])?;
+            println!("{}", json);
+        } else {
+            let json = serde_json::to_string_pretty(&analyses)?;
+            println!("{}", json);
         }
-        "ndjson" => {
-            // Newline-delimited JSON - one per line, good for streaming/large datasets
-            for analysis in &analyses {
-                let json = serde_json::to_string(analysis)?;
-                println!("{}", json);
-            }
+    } else if args.output.is_ndjson() {
+        // Newline-delimited JSON - one per line, good for streaming/large datasets
+        for analysis in &analyses {
+            let json = serde_json::to_string(analysis)?;
+            println!("{}", json);
         }
-        _ => {
-            // Pretty print
-            for (i, analysis) in analyses.iter().enumerate() {
-                if i > 0 {
-                    println!("\n{}", "=".repeat(80));
-                    println!();
-                }
-                println!("{}", format_analysis(analysis));
-                // Add explorer link
-                if let Some(explorer) = chain.explorer_url() {
-                    println!("\nExplorer: {}/tx/{:#x}", explorer, analysis.hash);
-                }
+    } else {
+        // Pretty/table print
+        for (i, analysis) in analyses.iter().enumerate() {
+            if i > 0 {
+                println!("\n{}", "=".repeat(80));
+                println!();
+            }
+            println!("{}", format_analysis(analysis));
+            // Add explorer link
+            if let Some(explorer) = chain.explorer_url() {
+                println!("\nExplorer: {}/tx/{:#x}", explorer, analysis.hash);
             }
         }
     }

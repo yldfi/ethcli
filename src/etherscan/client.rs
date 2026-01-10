@@ -241,6 +241,12 @@ impl Client {
                 .to_lowercase()
         );
 
+        // Check negative cache first - skip lookup if we recently found nothing
+        if self.cache.is_not_found(&normalized) {
+            tracing::debug!("Selector {} in negative cache, skipping lookup", normalized);
+            return None;
+        }
+
         // Try 4byte.directory first
         let url = format!(
             "https://www.4byte.directory/api/v1/signatures/?hex_signature={}",
@@ -287,6 +293,9 @@ impl Client {
             return Some(vec![sig]);
         }
 
+        // Nothing found anywhere - add to negative cache to avoid repeated lookups
+        self.cache.set_not_found(&normalized);
+        tracing::debug!("Selector {} not found, added to negative cache", normalized);
         None
     }
 
@@ -309,6 +318,12 @@ impl Client {
             "0x{}",
             topic0.strip_prefix("0x").unwrap_or(topic0).to_lowercase()
         );
+
+        // Check negative cache first - skip lookup if we recently found nothing
+        if self.cache.is_not_found(&normalized) {
+            tracing::debug!("Event {} in negative cache, skipping lookup", normalized);
+            return None;
+        }
 
         // Try 4byte.directory first
         let url = format!(
@@ -353,6 +368,9 @@ impl Client {
             return Some(vec![sig]);
         }
 
+        // Nothing found anywhere - add to negative cache to avoid repeated lookups
+        self.cache.set_not_found(&normalized);
+        tracing::debug!("Event {} not found, added to negative cache", normalized);
         None
     }
 

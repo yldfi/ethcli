@@ -66,12 +66,6 @@ pub struct RpcPool {
     health: Arc<HealthTracker>,
     /// Max concurrent requests
     concurrency: usize,
-    /// Global proxy URL (reserved for future use)
-    #[allow(dead_code)]
-    proxy: Option<String>,
-    /// Minimum priority to use (reserved for future use)
-    #[allow(dead_code)]
-    min_priority: u8,
     /// Override chunk size (max block range per request)
     chunk_size_override: Option<u64>,
 }
@@ -132,8 +126,6 @@ impl RpcPool {
             endpoints,
             health: Arc::new(HealthTracker::new()),
             concurrency: config.concurrency,
-            proxy,
-            min_priority: config.min_priority,
             chunk_size_override: config.chunk_size,
         })
     }
@@ -147,8 +139,6 @@ impl RpcPool {
             endpoints: vec![endpoint],
             health: Arc::new(HealthTracker::new()),
             concurrency: 1,
-            proxy: None,
-            min_priority: 1,
             chunk_size_override: None,
         })
     }

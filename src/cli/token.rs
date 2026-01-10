@@ -2,6 +2,7 @@
 //!
 //! Get token info, holders, and balances
 
+use super::OutputFormat;
 use crate::config::{AddressBook, Chain};
 use crate::etherscan::TokenMetadataCache;
 use crate::rpc::get_rpc_endpoint;
@@ -48,9 +49,9 @@ pub enum TokenCommands {
         /// Token contract address
         address: String,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get top token holders (requires API key for most tokens)
@@ -63,9 +64,9 @@ pub enum TokenCommands {
         #[arg(long, default_value = "100")]
         limit: u32,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get token balance for holder(s)
@@ -86,9 +87,9 @@ pub enum TokenCommands {
         #[arg(long)]
         show_zero: bool,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 }
 
@@ -119,7 +120,7 @@ pub async fn handle(
                     _ => "(unknown)".to_string(),
                 };
 
-                if output == "json" {
+                if output.is_json() {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -202,7 +203,7 @@ pub async fn handle(
                 _ => "(unknown)".to_string(),
             };
 
-            if output == "json" {
+            if output.is_json() {
                 println!(
                     "{}",
                     serde_json::json!({
@@ -294,7 +295,7 @@ pub async fn handle(
                 let is_eth = token.eq_ignore_ascii_case("eth");
 
                 // Add separator between tokens in pretty output
-                if multiple_tokens && token_idx > 0 && output != "json" {
+                if multiple_tokens && token_idx > 0 && output.is_table() {
                     println!();
                 }
 
@@ -308,7 +309,7 @@ pub async fn handle(
                     }
 
                     // Print header for multiple tokens
-                    if multiple_tokens && output != "json" {
+                    if multiple_tokens && output.is_table() {
                         println!("═══ {} ═══", symbol);
                     }
 
@@ -319,7 +320,7 @@ pub async fn handle(
                         let balance = provider.get_balance(*holder_addr).await?;
                         let formatted = format_token_amount(&balance.to_string(), decimals);
 
-                        if output == "json" {
+                        if output.is_json() {
                             json_results.push(serde_json::json!({
                                 "token": "eth",
                                 "tokenLabel": "ETH",
@@ -375,7 +376,7 @@ pub async fn handle(
                     }
 
                     // Print header for multiple tokens
-                    if multiple_tokens && output != "json" {
+                    if multiple_tokens && output.is_table() {
                         println!("═══ {} ═══", symbol);
                     }
 
@@ -393,7 +394,7 @@ pub async fn handle(
 
                         let formatted = format_token_amount(&balance.to_string(), decimals);
 
-                        if output == "json" {
+                        if output.is_json() {
                             json_results.push(serde_json::json!({
                                 "token": token_str,
                                 "tokenLabel": token_label,
@@ -414,7 +415,7 @@ pub async fn handle(
                 }
             }
 
-            if output == "json" {
+            if output.is_json() {
                 println!("{}", serde_json::to_string_pretty(&json_results)?);
             }
         }

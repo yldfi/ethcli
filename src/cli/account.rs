@@ -2,6 +2,7 @@
 //!
 //! Query balances, transactions, and token transfers for addresses
 
+use super::OutputFormat;
 use crate::config::{AddressBook, Chain};
 use crate::etherscan::Client;
 use crate::rpc::get_rpc_endpoint;
@@ -75,19 +76,20 @@ pub enum AccountCommands {
         /// Address to query
         address: String,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get native token balance for address(es)
+    #[command(visible_alias = "bal")]
     Balance {
         /// Address(es) to query
         addresses: Vec<String>,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get transaction history for an address
@@ -107,9 +109,9 @@ pub enum AccountCommands {
         #[arg(long, default_value = "desc")]
         sort: String,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get internal transactions for an address
@@ -125,9 +127,9 @@ pub enum AccountCommands {
         #[arg(long, default_value = "50")]
         limit: u64,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get ERC20 token transfers for an address
@@ -147,9 +149,9 @@ pub enum AccountCommands {
         #[arg(long, default_value = "50")]
         limit: u64,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get ERC721 (NFT) transfers for an address
@@ -169,9 +171,9 @@ pub enum AccountCommands {
         #[arg(long, default_value = "50")]
         limit: u64,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get ERC1155 transfers for an address
@@ -191,9 +193,9 @@ pub enum AccountCommands {
         #[arg(long, default_value = "50")]
         limit: u64,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get blocks mined/validated by an address
@@ -209,9 +211,9 @@ pub enum AccountCommands {
         #[arg(long, default_value = "50")]
         limit: u64,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 }
 
@@ -261,7 +263,7 @@ pub async fn handle(
                 .await
                 .ok();
 
-            if output == "json" {
+            if output.is_json() {
                 let json = serde_json::json!({
                     "address": format!("{:#x}", addr),
                     "balance": balance_eth,
@@ -382,7 +384,7 @@ pub async fn handle(
                     .map_err(|e| anyhow::anyhow!("Balance failed: {}", e))?;
                 let balance_eth = format_wei_to_eth(&balance.to_string());
 
-                if output == "json" {
+                if output.is_json() {
                     let mut json = serde_json::json!({
                         "address": format!("{:#x}", addr),
                         "balance_wei": balance.to_string(),
@@ -426,7 +428,7 @@ pub async fn handle(
                     results.push((*addr, label.clone(), balance));
                 }
 
-                if output == "json" {
+                if output.is_json() {
                     let json_results: Vec<serde_json::Value> = results
                         .iter()
                         .map(|(addr, label, bal)| {
@@ -491,7 +493,7 @@ pub async fn handle(
 
             let txs = client.get_transactions(&addr, Some(params)).await?;
 
-            if output == "json" {
+            if output.is_json() {
                 // Manually construct JSON to avoid GenesisOption serialization issues
                 let json_txs: Vec<serde_json::Value> = txs
                     .iter()
@@ -582,7 +584,7 @@ pub async fn handle(
                 .get_internal_transactions(query, Some(params))
                 .await?;
 
-            if output == "json" {
+            if output.is_json() {
                 println!("{}", serde_json::to_string_pretty(&txs)?);
             } else {
                 println!("Internal Transactions for {}", address);
@@ -651,7 +653,7 @@ pub async fn handle(
                 .get_erc20_token_transfer_events(query, Some(params))
                 .await?;
 
-            if output == "json" {
+            if output.is_json() {
                 println!("{}", serde_json::to_string_pretty(&transfers)?);
             } else {
                 println!("ERC20 Transfers for {}", address);
@@ -720,7 +722,7 @@ pub async fn handle(
                 .get_erc721_token_transfer_events(query, Some(params))
                 .await?;
 
-            if output == "json" {
+            if output.is_json() {
                 println!("{}", serde_json::to_string_pretty(&transfers)?);
             } else {
                 println!("ERC721 Transfers for {}", address);
@@ -789,7 +791,7 @@ pub async fn handle(
                 .get_erc1155_token_transfer_events(query, Some(params))
                 .await?;
 
-            if output == "json" {
+            if output.is_json() {
                 println!("{}", serde_json::to_string_pretty(&transfers)?);
             } else {
                 println!("ERC1155 Transfers for {}", address);
@@ -838,7 +840,7 @@ pub async fn handle(
             // Using None for pagination to get default results
             let blocks = client.get_mined_blocks(&addr, None, None).await?;
 
-            if output == "json" {
+            if output.is_json() {
                 println!("{}", serde_json::to_string_pretty(&blocks)?);
             } else {
                 println!("Blocks Mined by {}", address);

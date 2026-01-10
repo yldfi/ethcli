@@ -2,6 +2,7 @@
 //!
 //! Add, remove, list, and lookup saved addresses.
 
+use super::OutputFormat;
 use crate::config::{AddressBook, AddressEntry};
 use clap::Subcommand;
 
@@ -40,9 +41,9 @@ pub enum AddressCommands {
         #[arg(long, short)]
         tag: Option<String>,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Get address by label
@@ -50,9 +51,9 @@ pub enum AddressCommands {
         /// Label to look up
         label: String,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Search addresses by partial match
@@ -60,9 +61,9 @@ pub enum AddressCommands {
         /// Search query (matches label, address, description, or tags)
         query: String,
 
-        /// Output format (pretty, json)
-        #[arg(long, short, default_value = "pretty")]
-        output: String,
+        /// Output format (json, table/pretty)
+        #[arg(long, short, value_enum, default_value = "table")]
+        output: OutputFormat,
     },
 
     /// Import addresses from a JSON file
@@ -144,7 +145,7 @@ pub fn handle(action: &AddressCommands, quiet: bool) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            if output == "json" {
+            if output.is_json() {
                 let json_entries: Vec<_> = entries
                     .iter()
                     .map(|(label, entry)| {
@@ -172,7 +173,7 @@ pub fn handle(action: &AddressCommands, quiet: bool) -> anyhow::Result<()> {
             let book = AddressBook::load_default();
 
             if let Some(entry) = book.get(label) {
-                if output == "json" {
+                if output.is_json() {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -202,7 +203,7 @@ pub fn handle(action: &AddressCommands, quiet: bool) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            if output == "json" {
+            if output.is_json() {
                 let json_entries: Vec<_> = entries
                     .iter()
                     .map(|(label, entry)| {
