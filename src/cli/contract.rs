@@ -102,6 +102,7 @@ async fn detect_proxy_implementation<P: Provider>(
 #[derive(Subcommand)]
 pub enum ContractCommands {
     /// Get verified contract ABI
+    #[command(visible_alias = "abi")]
     Abi {
         /// Contract address
         address: String,
