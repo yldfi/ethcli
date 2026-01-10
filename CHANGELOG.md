@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.2.0](https://github.com/michaeldim/ethcli/compare/v0.1.0...v0.2.0) (2026-01-10)
+
+
+### Features
+
+* add --since option and fix tuple[] ABI parsing ([2bf15e6](https://github.com/michaeldim/ethcli/commit/2bf15e6c7f8e509b4e80effcea66e2c656667996))
+* add address book, Multicall3 batching, and smart endpoint selection ([ec8c31c](https://github.com/michaeldim/ethcli/commit/ec8c31cec1283b4e7e33c95fab9872f21086e594))
+* add cast, rpc, and ens commands ([4da02b2](https://github.com/michaeldim/ethcli/commit/4da02b243d6e831c2f70cbb9ebc3cf1d4a382b34))
+* add comprehensive Etherscan API commands via foundry-block-explorers ([c07c803](https://github.com/michaeldim/ethcli/commit/c07c80384d93d6f6eb26c9212f260641cf8e2d22))
+* add multiple events, auto from_block, and topic hash support ([2685628](https://github.com/michaeldim/ethcli/commit/2685628afe7c561e4af1690138e3d23d5ad08b82))
+* add proxy detection, human-readable output, and explorer links ([ae4093d](https://github.com/michaeldim/ethcli/commit/ae4093de70b0602aec60177aa783d62f277a27bd))
+* add release-please for automated versioning ([c085cff](https://github.com/michaeldim/ethcli/commit/c085cff513972e04c87be254543a2a99db2d862b))
+* add tx command for transaction analysis with hybrid signature caching ([e4514a1](https://github.com/michaeldim/ethcli/commit/e4514a1e25863d1ad08553db0755b8ecf93ce802))
+* **contract:** add contract call with auto-ABI fetch ([a4d91e3](https://github.com/michaeldim/ethcli/commit/a4d91e392f0fb84bffd6e898f5c2825feb5be408))
+* improve CLI usability with ENS resolution, signature prioritization, and output ordering ([99dd5d0](https://github.com/michaeldim/ethcli/commit/99dd5d0a12b4210c63ed4e1bae5ea0fa40b358c6))
+* **logs:** add --timestamps flag to include block timestamps ([ae39749](https://github.com/michaeldim/ethcli/commit/ae39749bab569f02f1145961d7c6d4338261a220))
+* **rpc:** add signature support to rpc call command ([c576a68](https://github.com/michaeldim/ethcli/commit/c576a6840b35c942f8422e1b08ae08c522232fc9))
+* unified RPC endpoint management with auto-optimization ([28b1a56](https://github.com/michaeldim/ethcli/commit/28b1a56de86af252d5754e66b121be617bdfe7a0))
+
+
+### Bug Fixes
+
+* add filename length limit and Windows reserved name check ([837cdbc](https://github.com/michaeldim/ethcli/commit/837cdbce48aec57f50dc6e5d5ee56ba6cfc0b4af))
+* address critical issues from second code review ([d41f0db](https://github.com/michaeldim/ethcli/commit/d41f0db649dd1ae460c454fb9a14738050e97b83))
+* address security and performance issues from code review ([74baef7](https://github.com/michaeldim/ethcli/commit/74baef78e5cb0a55eccad1ed36b257aa49f804ba))
+* address security and robustness issues from code review ([853ee84](https://github.com/michaeldim/ethcli/commit/853ee848799c4705dd04df48cb526be6daa64907))
+* case-insensitive event name matching ([5d860cb](https://github.com/michaeldim/ethcli/commit/5d860cb196dc357199a5cb76d0c8861c0c6ba306))
+* event filter in raw mode and add event name lookup ([1e7ee9e](https://github.com/michaeldim/ethcli/commit/1e7ee9e2397e67ae141e17e44e8fcbe97913cf2a))
+* read etherscan_api_key from config file for all commands ([acf568f](https://github.com/michaeldim/ethcli/commit/acf568fce1f9abe67b8b955d9d920b3f7c481316))
+* release workflow packages ethcli binary instead of eth-log-fetch ([d55f9d8](https://github.com/michaeldim/ethcli/commit/d55f9d8f54481587e31685d10c68875abf7cd4e5))
+* remove trailing_var_arg to fix CLI flag parsing in simulate ([35ca014](https://github.com/michaeldim/ethcli/commit/35ca014606b24d5f92492774c6244232005c7743))
+* resolve clippy and formatting issues ([4e5441d](https://github.com/michaeldim/ethcli/commit/4e5441d5b28302517da52df1d59e516c18e45e8c))
+* security hardening from multi-round AI code reviews ([11dac38](https://github.com/michaeldim/ethcli/commit/11dac38c0f2e8d7582fe68ff23b7421295521017))
+* try multiple RPC endpoints when tx/receipt not found ([f69e677](https://github.com/michaeldim/ethcli/commit/f69e67717b14597126efd6b3c5031cae5c782c54))
+* update release workflow to use ethcli binary name ([8d1d5e4](https://github.com/michaeldim/ethcli/commit/8d1d5e45805cbe2352bf5e6a3161834779c79da7))
+* update to connect_http for alloy 1.2 compatibility ([9b28877](https://github.com/michaeldim/ethcli/commit/9b288779ed49108d6ab5c2725bc673126b8c40b2))
+* use ASCII-only chars in filename sanitization ([aa13b3f](https://github.com/michaeldim/ethcli/commit/aa13b3f244df23dc9a4e9f8228799aa8b128d83b))
+
+
+### Performance Improvements
+
+* parallelize transaction and receipt fetching ([ea2cbed](https://github.com/michaeldim/ethcli/commit/ea2cbed01d9655242e3c36d567a85762dc87b237))
+
 ## [0.12.0](https://github.com/michaeldim/ethcli/compare/v0.11.1...v0.12.0) (2025-12-30)
 
 
