@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/michaeldim/ethcli/compare/v0.17.0...v0.18.0) (2026-01-10)
+
+
+### Features
+
+* enhance token balance with multiple holders and ETH support ([23cff93](https://github.com/michaeldim/ethcli/commit/23cff93276f4428fb563639641f62bbf13798ecd))
+* support multiple tokens in token balance command ([499060b](https://github.com/michaeldim/ethcli/commit/499060b76fa46eaa1d4b6d36aae46e41f8b87fd7))
+
 ## [0.17.0](https://github.com/michaeldim/ethcli/compare/v0.16.0...v0.17.0) (2026-01-10)
 
 
