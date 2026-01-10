@@ -37,6 +37,18 @@ pub enum DryRunFormat {
     Powershell,
     /// Just the endpoint URL
     Url,
+    /// Python requests
+    Python,
+    /// HTTPie command
+    Httpie,
+    /// wget command
+    Wget,
+    /// Go net/http
+    Go,
+    /// Rust reqwest
+    Rust,
+    /// Node.js axios
+    Axios,
 }
 
 /// Format a request as the specified output format
@@ -46,17 +58,21 @@ fn format_request(
     headers: &[(&str, &str)],
     body: &serde_json::Value,
     format: DryRunFormat,
+    show_secrets: bool,
 ) -> String {
+    // Helper to check if a header should be masked
+    let should_mask = |key: &str| -> bool {
+        !show_secrets
+            && (key.to_lowercase().contains("key") || key.to_lowercase().contains("authorization"))
+    };
+
     match format {
         DryRunFormat::Json => serde_json::to_string_pretty(body).unwrap_or_default(),
         DryRunFormat::Url => url.to_string(),
         DryRunFormat::Curl => {
             let mut cmd = format!("curl -X {} '{}'", method, url);
             for (key, value) in headers {
-                // Mask API keys in output
-                let display_value = if key.to_lowercase().contains("key")
-                    || key.to_lowercase().contains("authorization")
-                {
+                let display_value = if should_mask(key) {
                     format!("${}", key.to_uppercase().replace("-", "_"))
                 } else {
                     value.to_string()
@@ -70,9 +86,7 @@ fn format_request(
         DryRunFormat::Fetch => {
             let mut headers_obj = String::from("{");
             for (i, (key, value)) in headers.iter().enumerate() {
-                let display_value = if key.to_lowercase().contains("key")
-                    || key.to_lowercase().contains("authorization")
-                {
+                let display_value = if should_mask(key) {
                     format!("process.env.{}", key.to_uppercase().replace("-", "_"))
                 } else {
                     format!("'{}'", value)
@@ -99,9 +113,7 @@ console.log(data);"#,
         DryRunFormat::Powershell => {
             let mut headers_hash = String::from("@{");
             for (key, value) in headers {
-                let display_value = if key.to_lowercase().contains("key")
-                    || key.to_lowercase().contains("authorization")
-                {
+                let display_value = if should_mask(key) {
                     format!("$env:{}", key.to_uppercase().replace("-", "_"))
                 } else {
                     format!("'{}'", value)
@@ -121,6 +133,165 @@ $body = @'
 Invoke-RestMethod -Uri '{}' -Method {} -Headers $headers -Body $body -ContentType 'application/json'"#,
                 headers_hash, body_str, url, method
             )
+        }
+        DryRunFormat::Python => {
+            let mut headers_dict = String::from("{");
+            for (i, (key, value)) in headers.iter().enumerate() {
+                let display_value = if should_mask(key) {
+                    format!("os.environ['{}']", key.to_uppercase().replace("-", "_"))
+                } else {
+                    format!("'{}'", value)
+                };
+                if i > 0 {
+                    headers_dict.push(',');
+                }
+                headers_dict.push_str(&format!("\n    '{}': {}", key, display_value));
+            }
+            headers_dict.push_str("\n}");
+
+            let body_str = serde_json::to_string_pretty(body).unwrap_or_default();
+            format!(
+                r#"import requests
+import os
+
+headers = {}
+
+data = {}
+
+response = requests.{}('{}', headers=headers, json=data)
+print(response.json())"#,
+                headers_dict,
+                body_str,
+                method.to_lowercase(),
+                url
+            )
+        }
+        DryRunFormat::Httpie => {
+            let mut cmd = format!("http {} '{}'", method, url);
+            for (key, value) in headers {
+                let display_value = if should_mask(key) {
+                    format!("$${}", key.to_uppercase().replace("-", "_"))
+                } else {
+                    value.to_string()
+                };
+                cmd.push_str(&format!(" \\\n  '{}:{}'", key, display_value));
+            }
+            let body_str = serde_json::to_string(body).unwrap_or_default();
+            // HTTPie uses := for raw JSON
+            cmd.push_str(&format!(" \\\n  --raw '{}'", body_str));
+            cmd
+        }
+        DryRunFormat::Wget => {
+            let mut cmd = format!("wget -q -O - --method={} '{}'", method, url);
+            for (key, value) in headers {
+                let display_value = if should_mask(key) {
+                    format!("${}", key.to_uppercase().replace("-", "_"))
+                } else {
+                    value.to_string()
+                };
+                cmd.push_str(&format!(" \\\n  --header='{}: {}'", key, display_value));
+            }
+            let body_str = serde_json::to_string(body).unwrap_or_default();
+            cmd.push_str(&format!(" \\\n  --body-data='{}'", body_str));
+            cmd
+        }
+        DryRunFormat::Go => {
+            let body_str = serde_json::to_string_pretty(body).unwrap_or_default();
+            let mut header_lines = String::new();
+            for (key, value) in headers {
+                let display_value = if should_mask(key) {
+                    format!("os.Getenv(\"{}\")", key.to_uppercase().replace("-", "_"))
+                } else {
+                    format!("\"{}\"", value)
+                };
+                header_lines.push_str(&format!(
+                    "    req.Header.Set(\"{}\", {})\n",
+                    key, display_value
+                ));
+            }
+            let mut s = String::from("package main\n\nimport (\n");
+            s.push_str("    \"bytes\"\n    \"encoding/json\"\n    \"fmt\"\n");
+            s.push_str("    \"net/http\"\n    \"os\"\n)\n\nfunc main() {\n");
+            s.push_str(&format!("    data := `{}`\n\n", body_str));
+            s.push_str(&format!(
+                "    req, _ := http.NewRequest(\"{}\", \"{}\", bytes.NewBuffer([]byte(data)))\n",
+                method, url
+            ));
+            s.push_str(&header_lines);
+            s.push_str("    req.Header.Set(\"Content-Type\", \"application/json\")\n\n");
+            s.push_str("    client := &http.Client{}\n");
+            s.push_str("    resp, _ := client.Do(req)\n");
+            s.push_str("    defer resp.Body.Close()\n\n");
+            s.push_str("    var result map[string]interface{}\n");
+            s.push_str("    json.NewDecoder(resp.Body).Decode(&result)\n");
+            s.push_str("    fmt.Println(result)\n}");
+            s
+        }
+        DryRunFormat::Rust => {
+            let body_str = serde_json::to_string_pretty(body).unwrap_or_default();
+            let mut header_lines = String::new();
+            for (key, value) in headers {
+                let display_value = if should_mask(key) {
+                    format!(
+                        "&std::env::var(\"{}\").unwrap()",
+                        key.to_uppercase().replace("-", "_")
+                    )
+                } else {
+                    format!("\"{}\"", value)
+                };
+                header_lines.push_str(&format!(
+                    "        .header(\"{}\", {})\n",
+                    key, display_value
+                ));
+            }
+            let mut s = String::from("use reqwest::blocking::Client;\nuse serde_json::Value;\n\n");
+            s.push_str("fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
+            s.push_str(&format!(
+                "    let body: Value = serde_json::from_str(r#\"{}\"#)?;\n\n",
+                body_str
+            ));
+            s.push_str("    let client = Client::new();\n");
+            s.push_str("    let response = client\n");
+            s.push_str(&format!(
+                "        .{}(\"{}\")\n",
+                method.to_lowercase(),
+                url
+            ));
+            s.push_str(&header_lines);
+            s.push_str("        .json(&body)\n");
+            s.push_str("        .send()?\n");
+            s.push_str("        .json::<Value>()?;\n\n");
+            s.push_str("    println!(\"{:#?}\", response);\n");
+            s.push_str("    Ok(())\n}");
+            s
+        }
+        DryRunFormat::Axios => {
+            let mut headers_obj = String::from("{");
+            for (i, (key, value)) in headers.iter().enumerate() {
+                let display_value = if should_mask(key) {
+                    format!("process.env.{}", key.to_uppercase().replace("-", "_"))
+                } else {
+                    format!("'{}'", value)
+                };
+                if i > 0 {
+                    headers_obj.push(',');
+                }
+                headers_obj.push_str(&format!("\n    '{}': {}", key, display_value));
+            }
+            headers_obj.push_str("\n  }");
+
+            let body_str = serde_json::to_string_pretty(body).unwrap_or_default();
+            let mut s = String::from("const axios = require('axios');\n\n");
+            s.push_str(&format!(
+                "axios.{}('{}', {}, {{\n  headers: {}\n}})\n",
+                method.to_lowercase(),
+                url,
+                body_str,
+                headers_obj
+            ));
+            s.push_str(".then(response => console.log(response.data))\n");
+            s.push_str(".catch(error => console.error(error));");
+            s
         }
     }
 }
@@ -352,6 +523,10 @@ pub enum SimulateCommands {
         /// Dry run - output request without executing (json, curl, fetch, powershell, url)
         #[arg(long, value_enum)]
         dry_run: Option<DryRunFormat>,
+
+        /// Show API keys in dry-run output (default: masked with env var placeholders)
+        #[arg(long)]
+        show_secrets: bool,
     },
 
     /// Trace an existing transaction
@@ -495,6 +670,7 @@ pub async fn handle(
             tenderly,
             save,
             dry_run,
+            show_secrets,
         } => match via {
             SimulateVia::Cast => {
                 if dry_run.is_some() {
@@ -531,19 +707,40 @@ pub async fn handle(
                     &tenderly.tenderly_account,
                     &tenderly.tenderly_project,
                     *dry_run,
+                    *show_secrets,
                     quiet,
                 )
                 .await
             }
             SimulateVia::Debug => {
                 simulate_via_debug_rpc(
-                    to, sig, data, args, from, value, block, rpc_url, *dry_run, quiet,
+                    to,
+                    sig,
+                    data,
+                    args,
+                    from,
+                    value,
+                    block,
+                    rpc_url,
+                    *dry_run,
+                    *show_secrets,
+                    quiet,
                 )
                 .await
             }
             SimulateVia::Trace => {
                 simulate_via_trace_rpc(
-                    to, sig, data, args, from, value, block, rpc_url, *dry_run, quiet,
+                    to,
+                    sig,
+                    data,
+                    args,
+                    from,
+                    value,
+                    block,
+                    rpc_url,
+                    *dry_run,
+                    *show_secrets,
+                    quiet,
                 )
                 .await
             }
@@ -878,6 +1075,7 @@ async fn simulate_via_tenderly(
     tenderly_account: &Option<String>,
     tenderly_project: &Option<String>,
     dry_run: Option<DryRunFormat>,
+    show_secrets: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
     let (api_key, account, project) =
@@ -953,7 +1151,7 @@ async fn simulate_via_tenderly(
             ("X-Access-Key", api_key.as_str()),
             ("Content-Type", "application/json"),
         ];
-        let output = format_request(&url, "POST", &headers, &request, format);
+        let output = format_request(&url, "POST", &headers, &request, format, show_secrets);
         println!("{}", output);
         return Ok(());
     }
@@ -1131,6 +1329,7 @@ async fn simulate_via_debug_rpc(
     block: &str,
     rpc_url: &Option<String>,
     dry_run: Option<DryRunFormat>,
+    show_secrets: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
     let rpc = get_debug_rpc_url(rpc_url)
@@ -1171,7 +1370,7 @@ async fn simulate_via_debug_rpc(
     // Handle dry-run mode - output request without executing
     if let Some(format) = dry_run {
         let headers = vec![("Content-Type", "application/json")];
-        let output = format_request(&rpc, "POST", &headers, &request, format);
+        let output = format_request(&rpc, "POST", &headers, &request, format, show_secrets);
         println!("{}", output);
         return Ok(());
     }
@@ -1268,6 +1467,7 @@ async fn simulate_via_trace_rpc(
     block: &str,
     rpc_url: &Option<String>,
     dry_run: Option<DryRunFormat>,
+    show_secrets: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
     let rpc = get_trace_rpc_url(rpc_url).ok_or_else(|| {
@@ -1305,7 +1505,7 @@ async fn simulate_via_trace_rpc(
     // Handle dry-run mode - output request without executing
     if let Some(format) = dry_run {
         let headers = vec![("Content-Type", "application/json")];
-        let output = format_request(&rpc, "POST", &headers, &request, format);
+        let output = format_request(&rpc, "POST", &headers, &request, format, show_secrets);
         println!("{}", output);
         return Ok(());
     }
@@ -1931,6 +2131,7 @@ mod tests {
             &[("Content-Type", "application/json")],
             &body,
             DryRunFormat::Json,
+            false,
         );
         assert!(output.contains("\"method\": \"test\""));
     }
@@ -1944,6 +2145,7 @@ mod tests {
             &[("Content-Type", "application/json")],
             &body,
             DryRunFormat::Url,
+            false,
         );
         assert_eq!(output, "https://api.example.com/simulate");
     }
@@ -1957,6 +2159,7 @@ mod tests {
             &[("Content-Type", "application/json")],
             &body,
             DryRunFormat::Curl,
+            false,
         );
         assert!(output.starts_with("curl -X POST"));
         assert!(output.contains("'https://api.example.com'"));
@@ -1973,9 +2176,25 @@ mod tests {
             &[("X-Access-Key", "secret123")],
             &body,
             DryRunFormat::Curl,
+            false,
         );
         assert!(output.contains("$X_ACCESS_KEY"));
         assert!(!output.contains("secret123"));
+    }
+
+    #[test]
+    fn test_format_request_curl_shows_secrets() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("X-Access-Key", "secret123")],
+            &body,
+            DryRunFormat::Curl,
+            true, // show_secrets = true
+        );
+        assert!(output.contains("secret123"));
+        assert!(!output.contains("$X_ACCESS_KEY"));
     }
 
     #[test]
@@ -1987,6 +2206,7 @@ mod tests {
             &[("Content-Type", "application/json")],
             &body,
             DryRunFormat::Fetch,
+            false,
         );
         assert!(output.contains("const response = await fetch("));
         assert!(output.contains("method: 'POST'"));
@@ -2002,9 +2222,99 @@ mod tests {
             &[("Content-Type", "application/json")],
             &body,
             DryRunFormat::Powershell,
+            false,
         );
         assert!(output.contains("Invoke-RestMethod"));
         assert!(output.contains("-Method POST"));
         assert!(output.contains("$headers = @{"));
+    }
+
+    #[test]
+    fn test_format_request_python() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("Content-Type", "application/json")],
+            &body,
+            DryRunFormat::Python,
+            false,
+        );
+        assert!(output.contains("import requests"));
+        assert!(output.contains("requests.post("));
+    }
+
+    #[test]
+    fn test_format_request_httpie() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("Content-Type", "application/json")],
+            &body,
+            DryRunFormat::Httpie,
+            false,
+        );
+        assert!(output.starts_with("http POST"));
+    }
+
+    #[test]
+    fn test_format_request_wget() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("Content-Type", "application/json")],
+            &body,
+            DryRunFormat::Wget,
+            false,
+        );
+        assert!(output.starts_with("wget"));
+        assert!(output.contains("--method=POST"));
+    }
+
+    #[test]
+    fn test_format_request_go() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("Content-Type", "application/json")],
+            &body,
+            DryRunFormat::Go,
+            false,
+        );
+        assert!(output.contains("package main"));
+        assert!(output.contains("http.NewRequest"));
+    }
+
+    #[test]
+    fn test_format_request_rust() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("Content-Type", "application/json")],
+            &body,
+            DryRunFormat::Rust,
+            false,
+        );
+        assert!(output.contains("use reqwest"));
+        assert!(output.contains(".post("));
+    }
+
+    #[test]
+    fn test_format_request_axios() {
+        let body = serde_json::json!({"method": "test"});
+        let output = format_request(
+            "https://api.example.com",
+            "POST",
+            &[("Content-Type", "application/json")],
+            &body,
+            DryRunFormat::Axios,
+            false,
+        );
+        assert!(output.contains("const axios = require"));
+        assert!(output.contains("axios.post("));
     }
 }
