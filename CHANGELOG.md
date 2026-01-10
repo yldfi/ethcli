@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/michaeldim/ethcli/compare/v0.15.0...v0.16.0) (2026-01-10)
+
+
+### Features
+
+* implement token balance command ([0f54a2a](https://github.com/michaeldim/ethcli/commit/0f54a2afa94cf84f38fbc06649022155e8903e33))
+
 ## [0.15.0](https://github.com/michaeldim/ethcli/compare/v0.14.1...v0.15.0) (2026-01-10)
 
 
