@@ -36,6 +36,7 @@ cargo clippy
 ethcli logs       # Fetch historical logs from contracts
 ethcli tx         # Analyze transaction(s)
 ethcli account    # Account operations (balance, transactions, transfers)
+ethcli address    # Address book (save and lookup addresses by label)
 ethcli contract   # Contract operations (ABI, source, creation)
 ethcli token      # Token operations (info, holders, balance)
 ethcli gas        # Gas price oracle and estimates
@@ -65,6 +66,7 @@ ethcli simulate call ... --via cast      # Default: uses cast call
 ethcli simulate call ... --via anvil     # Forks mainnet with Anvil
 ethcli simulate call ... --via tenderly  # Uses Tenderly API (rich output)
 ethcli simulate call ... --via debug     # Uses debug_traceCall RPC
+ethcli simulate call ... --via trace     # Uses trace_call RPC (Erigon/OpenEthereum)
 ```
 
 ## Project Structure
@@ -77,9 +79,15 @@ src/
 ├── fetcher.rs        # Main LogFetcher coordinator
 ├── checkpoint.rs     # Resume/checkpoint system
 ├── proxy.rs          # Proxy rotation support
-├── tx.rs             # Transaction analysis
+├── tx/
+│   ├── mod.rs        # Transaction analysis module
+│   ├── addresses.rs  # Address extraction from traces
+│   ├── analyzer.rs   # Transaction analyzer
+│   ├── flow.rs       # Token flow analysis
+│   └── types.rs      # Transaction types
 ├── config/
 │   ├── mod.rs        # Config structs, builder pattern
+│   ├── addressbook.rs # Address book storage
 │   ├── chain.rs      # Chain enum (Ethereum, Polygon, etc.)
 │   ├── endpoint.rs   # EndpointConfig
 │   └── file.rs       # TOML config file handling
@@ -88,7 +96,10 @@ src/
 │   ├── endpoint.rs   # Single RPC endpoint wrapper (alloy)
 │   ├── pool.rs       # RPC pool with parallel requests
 │   ├── health.rs     # Endpoint health tracking
-│   └── defaults.rs   # 22 pre-configured archive endpoints
+│   ├── multicall.rs  # Multicall batching
+│   ├── optimizer.rs  # Request optimization
+│   ├── retry.rs      # Retry logic
+│   └── selector.rs   # Endpoint selection
 ├── abi/
 │   ├── mod.rs
 │   ├── parser.rs     # Event signature parser
@@ -108,12 +119,17 @@ src/
     ├── logs.rs       # Log fetching arguments
     ├── tx.rs         # Transaction analysis args
     ├── account.rs    # Account commands
+    ├── address.rs    # Address book commands
+    ├── cast.rs       # Type conversions, hashing, encoding
+    ├── config.rs     # Config management
     ├── contract.rs   # Contract commands
-    ├── token.rs      # Token commands
-    ├── gas.rs        # Gas oracle commands
-    ├── sig.rs        # Signature lookup commands
     ├── endpoints.rs  # Endpoint management
-    └── config.rs     # Config management
+    ├── ens.rs        # ENS name resolution
+    ├── gas.rs        # Gas oracle commands
+    ├── rpc.rs        # Direct RPC calls
+    ├── sig.rs        # Signature lookup commands
+    ├── simulate.rs   # Transaction simulation
+    └── token.rs      # Token commands
 ```
 
 ## Key Dependencies
@@ -193,7 +209,7 @@ Installed hooks run automatically on commit:
 
 ## Architecture Notes
 
-- Uses 22 pre-configured free archive RPC endpoints with known limits
+- Uses user-configured RPC endpoints (add with `ethcli endpoints add <url>`)
 - Parallel requests with automatic failover on errors
 - Health tracking disables failing endpoints temporarily
 - Checkpoint system allows resuming interrupted fetches
