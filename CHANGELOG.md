@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/michaeldim/ethcli/compare/v0.14.0...v0.14.1) (2026-01-10)
+
+
+### Bug Fixes
+
+* filter debug/trace endpoints by chain ([6e7e99e](https://github.com/michaeldim/ethcli/commit/6e7e99e9d6bfade96635afe68a54f77284e27c08))
+
 ## [0.14.0](https://github.com/michaeldim/ethcli/compare/v0.13.0...v0.14.0) (2026-01-10)
 
 
