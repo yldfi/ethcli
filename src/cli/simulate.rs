@@ -342,10 +342,10 @@ fn block_to_param(block: &str) -> anyhow::Result<String> {
 ///
 /// Priority:
 /// 1. Explicit --rpc-url if provided
-/// 2. First endpoint with has_debug: true from config (supports debug_traceCall)
-/// 3. First endpoint with has_trace: true from config (supports trace_call)
+/// 2. First endpoint with has_debug: true for the specified chain (supports debug_traceCall)
+/// 3. First endpoint with has_trace: true for the specified chain (supports trace_call)
 /// 4. First entry in debug_rpc_urls (backwards compatibility)
-fn get_debug_rpc_url(rpc_url: &Option<String>) -> Option<String> {
+fn get_debug_rpc_url(rpc_url: &Option<String>, chain: Chain) -> Option<String> {
     // If explicit URL provided, use it
     if rpc_url.is_some() {
         return rpc_url.clone();
@@ -354,13 +354,21 @@ fn get_debug_rpc_url(rpc_url: &Option<String>) -> Option<String> {
     // Try to get from config
     let config = ConfigFile::load_default().ok().flatten()?;
 
-    // First, look for endpoints with has_debug: true (preferred for debug_traceCall)
-    if let Some(ep) = config.endpoints.iter().find(|e| e.has_debug && e.enabled) {
+    // First, look for endpoints with has_debug: true for the specified chain
+    if let Some(ep) = config
+        .endpoints
+        .iter()
+        .find(|e| e.has_debug && e.enabled && e.chain == chain)
+    {
         return Some(ep.url.clone());
     }
 
-    // Next, look for endpoints with has_trace: true (trace_call support)
-    if let Some(ep) = config.endpoints.iter().find(|e| e.has_trace && e.enabled) {
+    // Next, look for endpoints with has_trace: true for the specified chain
+    if let Some(ep) = config
+        .endpoints
+        .iter()
+        .find(|e| e.has_trace && e.enabled && e.chain == chain)
+    {
         return Some(ep.url.clone());
     }
 
@@ -372,9 +380,9 @@ fn get_debug_rpc_url(rpc_url: &Option<String>) -> Option<String> {
 ///
 /// Priority:
 /// 1. Explicit --rpc-url if provided
-/// 2. First endpoint with has_trace: true from config (supports trace_call)
-/// 3. First endpoint with has_debug: true from config (some debug nodes also support trace)
-fn get_trace_rpc_url(rpc_url: &Option<String>) -> Option<String> {
+/// 2. First endpoint with has_trace: true for the specified chain (supports trace_call)
+/// 3. First endpoint with has_debug: true for the specified chain (some debug nodes also support trace)
+fn get_trace_rpc_url(rpc_url: &Option<String>, chain: Chain) -> Option<String> {
     // If explicit URL provided, use it
     if rpc_url.is_some() {
         return rpc_url.clone();
@@ -383,16 +391,20 @@ fn get_trace_rpc_url(rpc_url: &Option<String>) -> Option<String> {
     // Try to get from config
     let config = ConfigFile::load_default().ok().flatten()?;
 
-    // First, look for endpoints with has_trace: true (preferred for trace_call)
-    if let Some(ep) = config.endpoints.iter().find(|e| e.has_trace && e.enabled) {
+    // First, look for endpoints with has_trace: true for the specified chain
+    if let Some(ep) = config
+        .endpoints
+        .iter()
+        .find(|e| e.has_trace && e.enabled && e.chain == chain)
+    {
         return Some(ep.url.clone());
     }
 
-    // Fall back to endpoints with has_debug: true (Erigon supports both)
+    // Fall back to endpoints with has_debug: true for the specified chain
     config
         .endpoints
         .iter()
-        .find(|e| e.has_debug && e.enabled)
+        .find(|e| e.has_debug && e.enabled && e.chain == chain)
         .map(|e| e.url.clone())
 }
 
@@ -646,7 +658,7 @@ pub enum SimulateCommands {
 
 pub async fn handle(
     action: &SimulateCommands,
-    _chain: crate::config::Chain,
+    chain: crate::config::Chain,
     quiet: bool,
 ) -> anyhow::Result<()> {
     match action {
@@ -722,6 +734,7 @@ pub async fn handle(
                     value,
                     block,
                     rpc_url,
+                    chain,
                     *dry_run,
                     *show_secrets,
                     quiet,
@@ -738,6 +751,7 @@ pub async fn handle(
                     value,
                     block,
                     rpc_url,
+                    chain,
                     *dry_run,
                     *show_secrets,
                     quiet,
@@ -769,8 +783,8 @@ pub async fn handle(
                 )
                 .await
             }
-            SimulateVia::Debug => trace_tx_via_debug_rpc(hash, rpc_url, quiet).await,
-            SimulateVia::Trace => trace_tx_via_trace_rpc(hash, rpc_url, quiet).await,
+            SimulateVia::Debug => trace_tx_via_debug_rpc(hash, rpc_url, chain, quiet).await,
+            SimulateVia::Trace => trace_tx_via_trace_rpc(hash, rpc_url, chain, quiet).await,
         },
 
         SimulateCommands::Bundle {
@@ -1328,11 +1342,12 @@ async fn simulate_via_debug_rpc(
     value: &str,
     block: &str,
     rpc_url: &Option<String>,
+    chain: Chain,
     dry_run: Option<DryRunFormat>,
     show_secrets: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let rpc = get_debug_rpc_url(rpc_url)
+    let rpc = get_debug_rpc_url(rpc_url, chain)
         .ok_or_else(|| anyhow::anyhow!(
             "Debug RPC URL required. Set via --rpc-url, add an endpoint with has_debug: true, or use 'config add-debug-rpc'"
         ))?;
@@ -1406,9 +1421,10 @@ async fn simulate_via_debug_rpc(
 async fn trace_tx_via_debug_rpc(
     hash: &str,
     rpc_url: &Option<String>,
+    chain: Chain,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let rpc = get_debug_rpc_url(rpc_url)
+    let rpc = get_debug_rpc_url(rpc_url, chain)
         .ok_or_else(|| anyhow::anyhow!(
             "Debug RPC URL required. Set via --rpc-url, add an endpoint with has_debug: true, or use 'config add-debug-rpc'"
         ))?;
@@ -1466,11 +1482,12 @@ async fn simulate_via_trace_rpc(
     value: &str,
     block: &str,
     rpc_url: &Option<String>,
+    chain: Chain,
     dry_run: Option<DryRunFormat>,
     show_secrets: bool,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let rpc = get_trace_rpc_url(rpc_url).ok_or_else(|| {
+    let rpc = get_trace_rpc_url(rpc_url, chain).ok_or_else(|| {
         anyhow::anyhow!(
             "Trace RPC URL required. Set via --rpc-url or add an endpoint with has_trace: true"
         )
@@ -1541,9 +1558,10 @@ async fn simulate_via_trace_rpc(
 async fn trace_tx_via_trace_rpc(
     hash: &str,
     rpc_url: &Option<String>,
+    chain: Chain,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let rpc = get_trace_rpc_url(rpc_url).ok_or_else(|| {
+    let rpc = get_trace_rpc_url(rpc_url, chain).ok_or_else(|| {
         anyhow::anyhow!(
             "Trace RPC URL required. Set via --rpc-url or add an endpoint with has_trace: true"
         )
