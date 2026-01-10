@@ -68,7 +68,6 @@ pub enum TokenCommands {
     },
 
     /// Get token balance for a holder
-    #[command(hide = true)]
     Balance {
         /// Token contract address
         token: String,
@@ -235,10 +234,69 @@ pub async fn handle(
             ));
         }
 
-        TokenCommands::Balance { .. } => {
-            return Err(anyhow::anyhow!(
-                "Token balance endpoint requires Etherscan API key. Use the Etherscan website for now."
-            ));
+        TokenCommands::Balance {
+            token,
+            holder,
+            output,
+        } => {
+            let (token_addr, token_label) = resolve_address(token)?;
+            let (holder_addr, holder_label) = resolve_address(holder)?;
+
+            let token_str = format!("{:#x}", token_addr);
+            let holder_str = format!("{:#x}", holder_addr);
+            let token_display = token_label.as_ref().unwrap_or(&token_str);
+            let holder_display = holder_label.as_ref().unwrap_or(&holder_str);
+
+            if !quiet {
+                eprintln!(
+                    "Fetching {} balance for {}...",
+                    token_display, holder_display
+                );
+            }
+
+            // Get RPC endpoint
+            let endpoint = get_rpc_endpoint(chain)?;
+            let provider = endpoint.provider();
+
+            // Fetch balance and decimals in a single multicall
+            let multicall = MulticallBuilder::new()
+                .add_call_allow_failure(token_addr, selectors::balance_of(holder_addr))
+                .add_call_allow_failure(token_addr, selectors::decimals())
+                .add_call_allow_failure(token_addr, selectors::symbol());
+
+            let results = multicall.execute_with_retry(provider, 3).await?;
+
+            let balance = results
+                .first()
+                .and_then(|r| r.decode_uint256())
+                .ok_or_else(|| anyhow::anyhow!("Failed to get balance"))?;
+            let decimals = results.get(1).and_then(|r| r.decode_uint8()).unwrap_or(18);
+            let symbol = results
+                .get(2)
+                .and_then(|r| r.decode_string())
+                .unwrap_or_else(|| "???".to_string());
+
+            let formatted = format_token_amount(&balance.to_string(), decimals);
+
+            if output == "json" {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "token": token_str,
+                        "tokenLabel": token_label,
+                        "holder": holder_str,
+                        "holderLabel": holder_label,
+                        "balance": balance.to_string(),
+                        "balanceFormatted": formatted,
+                        "decimals": decimals,
+                        "symbol": symbol
+                    })
+                );
+            } else {
+                println!("{} {} ({})", formatted, symbol, token_display);
+                println!("Holder: {} ({})", holder_display, holder_str);
+                println!("Raw:    {}", balance);
+            }
         }
     }
 
