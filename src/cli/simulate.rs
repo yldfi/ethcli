@@ -131,7 +131,6 @@ pub enum SimulateCommands {
         data: Option<String>,
 
         /// Function arguments (used with --sig)
-        #[arg(trailing_var_arg = true)]
         args: Vec<String>,
 
         /// Sender address (default: zero address)
