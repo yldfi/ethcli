@@ -69,8 +69,9 @@ pub enum TokenCommands {
 
     /// Get token balance for a holder
     Balance {
-        /// Token contract address
-        token: String,
+        /// Token contract address(es)
+        #[arg(required = true)]
+        tokens: Vec<String>,
 
         /// Holder address (or use --tag for multiple)
         #[arg(long, required_unless_present = "tag")]
@@ -239,15 +240,11 @@ pub async fn handle(
         }
 
         TokenCommands::Balance {
-            token,
+            tokens,
             holder,
             tag,
             output,
         } => {
-            let (token_addr, token_label) = resolve_address(token)?;
-            let token_str = format!("{:#x}", token_addr);
-            let token_display = token_label.as_ref().unwrap_or(&token_str);
-
             // Build list of holders - either single holder or all with tag
             let holders: Vec<(Address, Option<String>)> = if let Some(h) = holder {
                 vec![resolve_address(h)?]
@@ -273,60 +270,74 @@ pub async fn handle(
             let endpoint = get_rpc_endpoint(chain)?;
             let provider = endpoint.provider();
 
-            // First get token decimals and symbol (once)
-            let meta_multicall = MulticallBuilder::new()
-                .add_call_allow_failure(token_addr, selectors::decimals())
-                .add_call_allow_failure(token_addr, selectors::symbol());
-            let meta_results = meta_multicall.execute_with_retry(&provider, 3).await?;
-            let decimals = meta_results
-                .first()
-                .and_then(|r| r.decode_uint8())
-                .unwrap_or(18);
-            let symbol = meta_results
-                .get(1)
-                .and_then(|r| r.decode_string())
-                .unwrap_or_else(|| "???".to_string());
-
             // Collect results for JSON output
             let mut json_results = Vec::new();
 
-            for (holder_addr, holder_label) in &holders {
-                let holder_str = format!("{:#x}", holder_addr);
-                let holder_display = holder_label.as_ref().unwrap_or(&holder_str);
+            // Process each token
+            for token in tokens {
+                let (token_addr, token_label) = resolve_address(token)?;
+                let token_str = format!("{:#x}", token_addr);
+                let token_display = token_label.as_ref().unwrap_or(&token_str);
+
+                // Get token decimals and symbol
+                let meta_multicall = MulticallBuilder::new()
+                    .add_call_allow_failure(token_addr, selectors::decimals())
+                    .add_call_allow_failure(token_addr, selectors::symbol());
+                let meta_results = meta_multicall.execute_with_retry(&provider, 3).await?;
+                let decimals = meta_results
+                    .first()
+                    .and_then(|r| r.decode_uint8())
+                    .unwrap_or(18);
+                let symbol = meta_results
+                    .get(1)
+                    .and_then(|r| r.decode_string())
+                    .unwrap_or_else(|| "???".to_string());
+
+                // Build multicall for all holder balances at once
+                let mut balance_multicall = MulticallBuilder::new();
+                for (holder_addr, _) in &holders {
+                    balance_multicall = balance_multicall
+                        .add_call_allow_failure(token_addr, selectors::balance_of(*holder_addr));
+                }
 
                 if !quiet {
                     eprintln!(
-                        "Fetching {} balance for {}...",
-                        token_display, holder_display
+                        "Fetching {} balances for {} holder(s)...",
+                        token_display,
+                        holders.len()
                     );
                 }
 
-                let balance_multicall = MulticallBuilder::new()
-                    .add_call_allow_failure(token_addr, selectors::balance_of(*holder_addr));
                 let balance_results = balance_multicall.execute_with_retry(&provider, 3).await?;
 
-                let balance = balance_results
-                    .first()
-                    .and_then(|r| r.decode_uint256())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Failed to get balance for {}", holder_display)
-                    })?;
+                for (i, (holder_addr, holder_label)) in holders.iter().enumerate() {
+                    let holder_str = format!("{:#x}", holder_addr);
+                    let holder_display = holder_label.as_ref().unwrap_or(&holder_str);
 
-                let formatted = format_token_amount(&balance.to_string(), decimals);
+                    let balance = balance_results
+                        .get(i)
+                        .and_then(|r| r.decode_uint256())
+                        .unwrap_or_default();
 
-                if output == "json" {
-                    json_results.push(serde_json::json!({
-                        "token": token_str,
-                        "tokenLabel": token_label,
-                        "holder": holder_str,
-                        "holderLabel": holder_label,
-                        "balance": balance.to_string(),
-                        "balanceFormatted": formatted,
-                        "decimals": decimals,
-                        "symbol": symbol
-                    }));
-                } else {
-                    println!("{:<20} {:>15} {}", holder_display, formatted, symbol);
+                    let formatted = format_token_amount(&balance.to_string(), decimals);
+
+                    if output == "json" {
+                        json_results.push(serde_json::json!({
+                            "token": token_str,
+                            "tokenLabel": token_label,
+                            "holder": holder_str,
+                            "holderLabel": holder_label,
+                            "balance": balance.to_string(),
+                            "balanceFormatted": formatted,
+                            "decimals": decimals,
+                            "symbol": symbol
+                        }));
+                    } else {
+                        // Only show non-zero balances in pretty output (unless single holder)
+                        if !balance.is_zero() || holders.len() == 1 {
+                            println!("{:<20} {:>15} {}", holder_display, formatted, symbol);
+                        }
+                    }
                 }
             }
 
