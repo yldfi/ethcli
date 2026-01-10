@@ -2,7 +2,7 @@
 //!
 //! Supports multiple backends: cast, anvil, tenderly, debug RPC
 
-use crate::config::{Chain, ConfigFile};
+use crate::config::{AddressBook, Chain, ConfigFile};
 use crate::rpc::get_rpc_url;
 use clap::{Args, Subcommand, ValueEnum};
 use std::process::Command;
@@ -296,7 +296,15 @@ print(response.json())"#,
     }
 }
 
+/// Resolve an address label to an address, or return the address as-is
+fn resolve_address(label_or_address: &str) -> String {
+    let book = AddressBook::load_default();
+    book.resolve(label_or_address)
+        .unwrap_or_else(|| label_or_address.to_string())
+}
+
 /// Build calldata from signature and args, or use raw data
+/// Resolves address labels in args
 fn build_calldata(
     sig: &Option<String>,
     data: &Option<String>,
@@ -308,7 +316,8 @@ fn build_calldata(
         let mut cmd = Command::new("cast");
         cmd.arg("calldata").arg(sig);
         for arg in args {
-            cmd.arg(arg);
+            // Resolve address labels in args
+            cmd.arg(resolve_address(arg));
         }
         let output = cmd.output()?;
         if !output.status.success() {
@@ -890,14 +899,16 @@ async fn simulate_via_cast(
     let mut cmd = Command::new("cast");
     cmd.arg("call");
 
-    // Add target
-    cmd.arg(to);
+    // Resolve target address
+    let resolved_to = resolve_address(to);
+    cmd.arg(&resolved_to);
 
     // Add signature or data
     if let Some(sig) = sig {
         cmd.arg(sig);
         for arg in args {
-            cmd.arg(arg);
+            // Resolve address labels in args
+            cmd.arg(resolve_address(arg));
         }
     } else if let Some(data) = data {
         cmd.arg("--data").arg(data);
@@ -1024,12 +1035,16 @@ async fn simulate_via_anvil(
     // Run the simulation against local anvil
     let mut cmd = Command::new("cast");
     cmd.arg("call");
-    cmd.arg(to);
+
+    // Resolve target address
+    let resolved_to = resolve_address(to);
+    cmd.arg(&resolved_to);
 
     if let Some(sig) = sig {
         cmd.arg(sig);
         for arg in args {
-            cmd.arg(arg);
+            // Resolve address labels in args
+            cmd.arg(resolve_address(arg));
         }
     } else if let Some(data) = data {
         cmd.arg("--data").arg(data);
@@ -1095,6 +1110,9 @@ async fn simulate_via_tenderly(
     let (api_key, account, project) =
         get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
 
+    // Resolve target address
+    let resolved_to = resolve_address(to);
+
     let calldata = build_calldata(sig, data, args)?;
 
     let from_addr = from
@@ -1114,7 +1132,7 @@ async fn simulate_via_tenderly(
     let mut request = serde_json::json!({
         "network_id": "1",
         "from": from_addr,
-        "to": to,
+        "to": resolved_to,
         "input": calldata,
         "value": value_wei,
         "save": save,
@@ -1352,6 +1370,9 @@ async fn simulate_via_debug_rpc(
             "Debug RPC URL required. Set via --rpc-url, add an endpoint with has_debug: true, or use 'config add-debug-rpc'"
         ))?;
 
+    // Resolve target address
+    let resolved_to = resolve_address(to);
+
     let calldata = build_calldata(sig, data, args)?;
 
     let from_addr = from
@@ -1367,7 +1388,7 @@ async fn simulate_via_debug_rpc(
         "params": [
             {
                 "from": from_addr,
-                "to": to,
+                "to": resolved_to,
                 "data": calldata,
                 "value": value_hex
             },
@@ -1493,6 +1514,9 @@ async fn simulate_via_trace_rpc(
         )
     })?;
 
+    // Resolve target address
+    let resolved_to = resolve_address(to);
+
     let calldata = build_calldata(sig, data, args)?;
 
     let from_addr = from
@@ -1509,7 +1533,7 @@ async fn simulate_via_trace_rpc(
         "params": [
             {
                 "from": from_addr,
-                "to": to,
+                "to": resolved_to,
                 "data": calldata,
                 "value": value_hex
             },
