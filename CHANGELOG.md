@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.0](https://github.com/michaeldim/ethcli/compare/v0.18.0...v0.19.0) (2026-01-10)
+
+
+### Features
+
+* add negative caching for signature lookups (24h TTL) ([9cfd108](https://github.com/michaeldim/ethcli/commit/9cfd108))
+* add OutputFormat enum with clap ValueEnum derive ([9cfd108](https://github.com/michaeldim/ethcli/commit/9cfd108))
+* add command aliases: bal, src, info, abi ([9cfd108](https://github.com/michaeldim/ethcli/commit/9cfd108))
+
+
+### Security
+
+* set 0600 permissions on config, addressbook, and cache files ([9cfd108](https://github.com/michaeldim/ethcli/commit/9cfd108))
+
 ## [0.18.0](https://github.com/michaeldim/ethcli/compare/v0.17.0...v0.18.0) (2026-01-10)
 
 
