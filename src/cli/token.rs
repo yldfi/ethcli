@@ -72,9 +72,13 @@ pub enum TokenCommands {
         /// Token contract address
         token: String,
 
-        /// Holder address
-        #[arg(long)]
-        holder: String,
+        /// Holder address (or use --tag for multiple)
+        #[arg(long, required_unless_present = "tag")]
+        holder: Option<String>,
+
+        /// Get balances for all addresses with this tag
+        #[arg(long, required_unless_present = "holder")]
+        tag: Option<String>,
 
         /// Output format (pretty, json)
         #[arg(long, short, default_value = "pretty")]
@@ -237,51 +241,81 @@ pub async fn handle(
         TokenCommands::Balance {
             token,
             holder,
+            tag,
             output,
         } => {
             let (token_addr, token_label) = resolve_address(token)?;
-            let (holder_addr, holder_label) = resolve_address(holder)?;
-
             let token_str = format!("{:#x}", token_addr);
-            let holder_str = format!("{:#x}", holder_addr);
             let token_display = token_label.as_ref().unwrap_or(&token_str);
-            let holder_display = holder_label.as_ref().unwrap_or(&holder_str);
 
-            if !quiet {
-                eprintln!(
-                    "Fetching {} balance for {}...",
-                    token_display, holder_display
-                );
-            }
+            // Build list of holders - either single holder or all with tag
+            let holders: Vec<(Address, Option<String>)> = if let Some(h) = holder {
+                vec![resolve_address(h)?]
+            } else if let Some(t) = tag {
+                let book = AddressBook::load_default();
+                let entries = book.list(Some(t.as_str()));
+                if entries.is_empty() {
+                    return Err(anyhow::anyhow!("No addresses found with tag '{}'", t));
+                }
+                entries
+                    .into_iter()
+                    .filter_map(|(label, entry)| {
+                        Address::from_str(&entry.address)
+                            .ok()
+                            .map(|addr| (addr, Some(label.to_string())))
+                    })
+                    .collect()
+            } else {
+                return Err(anyhow::anyhow!("Must provide --holder or --tag"));
+            };
 
             // Get RPC endpoint
             let endpoint = get_rpc_endpoint(chain)?;
             let provider = endpoint.provider();
 
-            // Fetch balance and decimals in a single multicall
-            let multicall = MulticallBuilder::new()
-                .add_call_allow_failure(token_addr, selectors::balance_of(holder_addr))
+            // First get token decimals and symbol (once)
+            let meta_multicall = MulticallBuilder::new()
                 .add_call_allow_failure(token_addr, selectors::decimals())
                 .add_call_allow_failure(token_addr, selectors::symbol());
-
-            let results = multicall.execute_with_retry(provider, 3).await?;
-
-            let balance = results
+            let meta_results = meta_multicall.execute_with_retry(&provider, 3).await?;
+            let decimals = meta_results
                 .first()
-                .and_then(|r| r.decode_uint256())
-                .ok_or_else(|| anyhow::anyhow!("Failed to get balance"))?;
-            let decimals = results.get(1).and_then(|r| r.decode_uint8()).unwrap_or(18);
-            let symbol = results
-                .get(2)
+                .and_then(|r| r.decode_uint8())
+                .unwrap_or(18);
+            let symbol = meta_results
+                .get(1)
                 .and_then(|r| r.decode_string())
                 .unwrap_or_else(|| "???".to_string());
 
-            let formatted = format_token_amount(&balance.to_string(), decimals);
+            // Collect results for JSON output
+            let mut json_results = Vec::new();
 
-            if output == "json" {
-                println!(
-                    "{}",
-                    serde_json::json!({
+            for (holder_addr, holder_label) in &holders {
+                let holder_str = format!("{:#x}", holder_addr);
+                let holder_display = holder_label.as_ref().unwrap_or(&holder_str);
+
+                if !quiet {
+                    eprintln!(
+                        "Fetching {} balance for {}...",
+                        token_display, holder_display
+                    );
+                }
+
+                let balance_multicall = MulticallBuilder::new()
+                    .add_call_allow_failure(token_addr, selectors::balance_of(*holder_addr));
+                let balance_results = balance_multicall.execute_with_retry(&provider, 3).await?;
+
+                let balance = balance_results
+                    .first()
+                    .and_then(|r| r.decode_uint256())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Failed to get balance for {}", holder_display)
+                    })?;
+
+                let formatted = format_token_amount(&balance.to_string(), decimals);
+
+                if output == "json" {
+                    json_results.push(serde_json::json!({
                         "token": token_str,
                         "tokenLabel": token_label,
                         "holder": holder_str,
@@ -290,12 +324,14 @@ pub async fn handle(
                         "balanceFormatted": formatted,
                         "decimals": decimals,
                         "symbol": symbol
-                    })
-                );
-            } else {
-                println!("{} {} ({})", formatted, symbol, token_display);
-                println!("Holder: {} ({})", holder_display, holder_str);
-                println!("Raw:    {}", balance);
+                    }));
+                } else {
+                    println!("{:<20} {:>15} {}", holder_display, formatted, symbol);
+                }
+            }
+
+            if output == "json" {
+                println!("{}", serde_json::to_string_pretty(&json_results)?);
             }
         }
     }
