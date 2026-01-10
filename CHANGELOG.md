@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/michaeldim/ethcli/compare/v0.13.0...v0.14.0) (2026-01-10)
+
+
+### Features
+
+* add --dry-run flag to simulate commands ([6535b32](https://github.com/michaeldim/ethcli/commit/6535b326eb68438dbf4b6eaa6c57492149e0216f))
+* expand dry-run formats and add --show-secrets flag ([0ff9cc8](https://github.com/michaeldim/ethcli/commit/0ff9cc856653c2c79a52730462ed78c1e73612f3))
+
 ## [0.2.0](https://github.com/michaeldim/ethcli/compare/v0.1.0...v0.2.0) (2026-01-10)
 
 
