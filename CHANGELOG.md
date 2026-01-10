@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/michaeldim/ethcli/compare/v0.16.0...v0.17.0) (2026-01-10)
+
+
+### Features
+
+* add --tag option to token balance command ([85ca095](https://github.com/michaeldim/ethcli/commit/85ca095c3767cc2f02d7ed185127beac95b3fcd8))
+
 ## [0.16.0](https://github.com/michaeldim/ethcli/compare/v0.15.0...v0.16.0) (2026-01-10)
 
 
