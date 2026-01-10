@@ -4,8 +4,66 @@
 
 use crate::config::{Chain, ConfigFile};
 use crate::rpc::get_rpc_url;
-use clap::{Subcommand, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use std::process::Command;
+
+/// Tenderly API credentials - shared across multiple subcommands
+#[derive(Args, Clone, Debug)]
+pub struct TenderlyArgs {
+    /// Tenderly API key (or use TENDERLY_ACCESS_KEY env)
+    #[arg(long, env = "TENDERLY_ACCESS_KEY")]
+    pub tenderly_key: Option<String>,
+
+    /// Tenderly account slug
+    #[arg(long, env = "TENDERLY_ACCOUNT")]
+    pub tenderly_account: Option<String>,
+
+    /// Tenderly project slug
+    #[arg(long, env = "TENDERLY_PROJECT")]
+    pub tenderly_project: Option<String>,
+}
+
+/// Build calldata from signature and args, or use raw data
+fn build_calldata(
+    sig: &Option<String>,
+    data: &Option<String>,
+    args: &[String],
+) -> anyhow::Result<String> {
+    if let Some(data) = data {
+        Ok(data.clone())
+    } else if let Some(sig) = sig {
+        let mut cmd = Command::new("cast");
+        cmd.arg("calldata").arg(sig);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        let output = cmd.output()?;
+        if !output.status.success() {
+            return Err(anyhow::anyhow!("Failed to encode calldata"));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(anyhow::anyhow!("Must provide --sig or --data"))
+    }
+}
+
+/// Convert a value string to hex format for RPC calls
+fn value_to_hex(value: &str) -> anyhow::Result<String> {
+    if value == "0" {
+        Ok("0x0".to_string())
+    } else {
+        Ok(format!("0x{:x}", value.parse::<u128>()?))
+    }
+}
+
+/// Convert a block number or tag to RPC parameter format
+fn block_to_param(block: &str) -> anyhow::Result<String> {
+    if block == "latest" || block == "pending" || block == "earliest" {
+        Ok(block.to_string())
+    } else {
+        Ok(format!("0x{:x}", block.parse::<u64>()?))
+    }
+}
 
 /// Get a tracing-capable RPC URL from args or config
 ///
@@ -181,17 +239,9 @@ pub enum SimulateCommands {
         #[arg(long, short)]
         trace: bool,
 
-        /// Tenderly API key (or use TENDERLY_ACCESS_KEY env)
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
 
         /// Save simulation to Tenderly (returns simulation ID)
         #[arg(long)]
@@ -211,17 +261,9 @@ pub enum SimulateCommands {
         #[arg(long)]
         rpc_url: Option<String>,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
 
         /// Show full opcode trace
         #[arg(long, short)]
@@ -255,17 +297,9 @@ pub enum SimulateCommands {
         #[arg(long = "code-override", action = clap::ArgAction::Append)]
         code_overrides: Vec<String>,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
 
         /// Save simulation bundle to Tenderly
         #[arg(long)]
@@ -282,17 +316,9 @@ pub enum SimulateCommands {
         #[arg(long, short, default_value = "0")]
         page: u32,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
     },
 
     /// Get a saved simulation by ID (Tenderly only)
@@ -300,17 +326,9 @@ pub enum SimulateCommands {
         /// Simulation ID
         id: String,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
     },
 
     /// Get simulation info/metadata by ID (Tenderly only)
@@ -318,17 +336,9 @@ pub enum SimulateCommands {
         /// Simulation ID
         id: String,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
     },
 
     /// Share a simulation publicly (Tenderly only)
@@ -337,17 +347,9 @@ pub enum SimulateCommands {
         /// Simulation ID
         id: String,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
     },
 
     /// Unshare a simulation (make private) (Tenderly only)
@@ -355,17 +357,9 @@ pub enum SimulateCommands {
         /// Simulation ID
         id: String,
 
-        /// Tenderly API key
-        #[arg(long, env = "TENDERLY_ACCESS_KEY")]
-        tenderly_key: Option<String>,
-
-        /// Tenderly account slug
-        #[arg(long, env = "TENDERLY_ACCOUNT")]
-        tenderly_account: Option<String>,
-
-        /// Tenderly project slug
-        #[arg(long, env = "TENDERLY_PROJECT")]
-        tenderly_project: Option<String>,
+        /// Tenderly credentials
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
     },
 }
 
@@ -392,9 +386,7 @@ pub async fn handle(
             via,
             rpc_url,
             trace,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
+            tenderly,
             save,
         } => match via {
             SimulateVia::Cast => {
@@ -422,9 +414,9 @@ pub async fn handle(
                     code_overrides,
                     *block_timestamp,
                     *save,
-                    tenderly_key,
-                    tenderly_account,
-                    tenderly_project,
+                    &tenderly.tenderly_key,
+                    &tenderly.tenderly_account,
+                    &tenderly.tenderly_project,
                     quiet,
                 )
                 .await
@@ -443,9 +435,7 @@ pub async fn handle(
             hash,
             via,
             rpc_url,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
+            tenderly,
             trace,
             debug,
         } => match via {
@@ -457,9 +447,9 @@ pub async fn handle(
             SimulateVia::Tenderly => {
                 trace_tx_via_tenderly(
                     hash,
-                    tenderly_key,
-                    tenderly_account,
-                    tenderly_project,
+                    &tenderly.tenderly_key,
+                    &tenderly.tenderly_account,
+                    &tenderly.tenderly_project,
                     quiet,
                 )
                 .await
@@ -474,9 +464,7 @@ pub async fn handle(
             balance_overrides,
             storage_overrides,
             code_overrides,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
+            tenderly,
             save,
         } => {
             simulate_bundle_tenderly(
@@ -486,9 +474,9 @@ pub async fn handle(
                 storage_overrides,
                 code_overrides,
                 *save,
-                tenderly_key,
-                tenderly_account,
-                tenderly_project,
+                &tenderly.tenderly_key,
+                &tenderly.tenderly_account,
+                &tenderly.tenderly_project,
                 quiet,
             )
             .await
@@ -497,65 +485,61 @@ pub async fn handle(
         SimulateCommands::List {
             limit,
             page,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
+            tenderly,
         } => {
             list_simulations_tenderly(
                 *limit,
                 *page,
-                tenderly_key,
-                tenderly_account,
-                tenderly_project,
+                &tenderly.tenderly_key,
+                &tenderly.tenderly_account,
+                &tenderly.tenderly_project,
                 quiet,
             )
             .await
         }
 
-        SimulateCommands::Get {
-            id,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
-        } => {
-            get_simulation_tenderly(id, tenderly_key, tenderly_account, tenderly_project, quiet)
-                .await
+        SimulateCommands::Get { id, tenderly } => {
+            get_simulation_tenderly(
+                id,
+                &tenderly.tenderly_key,
+                &tenderly.tenderly_account,
+                &tenderly.tenderly_project,
+                quiet,
+            )
+            .await
         }
 
-        SimulateCommands::Info {
-            id,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
-        } => {
+        SimulateCommands::Info { id, tenderly } => {
             get_simulation_info_tenderly(
                 id,
-                tenderly_key,
-                tenderly_account,
-                tenderly_project,
+                &tenderly.tenderly_key,
+                &tenderly.tenderly_account,
+                &tenderly.tenderly_project,
                 quiet,
             )
             .await
         }
 
-        SimulateCommands::Share {
-            id,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
-        } => {
-            share_simulation_tenderly(id, tenderly_key, tenderly_account, tenderly_project, quiet)
-                .await
+        SimulateCommands::Share { id, tenderly } => {
+            share_simulation_tenderly(
+                id,
+                &tenderly.tenderly_key,
+                &tenderly.tenderly_account,
+                &tenderly.tenderly_project,
+                quiet,
+            )
+            .await
         }
 
-        SimulateCommands::Unshare {
-            id,
-            tenderly_key,
-            tenderly_account,
-            tenderly_project,
-        } => {
-            unshare_simulation_tenderly(id, tenderly_key, tenderly_account, tenderly_project, quiet)
-                .await
+        SimulateCommands::Unshare { id, tenderly } => {
+            unshare_simulation_tenderly(
+                id,
+                &tenderly.tenderly_key,
+                &tenderly.tenderly_account,
+                &tenderly.tenderly_project,
+                quiet,
+            )
+            .await
         }
     }
 }
@@ -780,24 +764,7 @@ async fn simulate_via_tenderly(
     let (api_key, account, project) =
         get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
 
-    // Build calldata
-    let calldata = if let Some(data) = data {
-        data.clone()
-    } else if let Some(sig) = sig {
-        // Use cast to encode the calldata
-        let mut cmd = Command::new("cast");
-        cmd.arg("calldata").arg(sig);
-        for arg in args {
-            cmd.arg(arg);
-        }
-        let output = cmd.output()?;
-        if !output.status.success() {
-            return Err(anyhow::anyhow!("Failed to encode calldata"));
-        }
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    } else {
-        return Err(anyhow::anyhow!("Must provide --sig or --data"));
-    };
+    let calldata = build_calldata(sig, data, args)?;
 
     let from_addr = from
         .clone()
@@ -810,12 +777,7 @@ async fn simulate_via_tenderly(
         Some(block.parse::<u64>()?)
     };
 
-    // Parse value
-    let value_wei = if value == "0" {
-        "0x0".to_string()
-    } else {
-        format!("0x{:x}", value.parse::<u128>()?)
-    };
+    let value_wei = value_to_hex(value)?;
 
     // Build request
     let mut request = serde_json::json!({
@@ -1045,39 +1007,14 @@ async fn simulate_via_debug_rpc(
             "Debug RPC URL required. Set via --rpc-url, add an endpoint with has_debug: true, or use 'config add-debug-rpc'"
         ))?;
 
-    // Build calldata
-    let calldata = if let Some(data) = data {
-        data.clone()
-    } else if let Some(sig) = sig {
-        let mut cmd = Command::new("cast");
-        cmd.arg("calldata").arg(sig);
-        for arg in args {
-            cmd.arg(arg);
-        }
-        let output = cmd.output()?;
-        if !output.status.success() {
-            return Err(anyhow::anyhow!("Failed to encode calldata"));
-        }
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    } else {
-        return Err(anyhow::anyhow!("Must provide --sig or --data"));
-    };
+    let calldata = build_calldata(sig, data, args)?;
 
     let from_addr = from
         .clone()
         .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string());
 
-    let value_hex = if value == "0" {
-        "0x0".to_string()
-    } else {
-        format!("0x{:x}", value.parse::<u128>()?)
-    };
-
-    let block_param = if block == "latest" {
-        "latest".to_string()
-    } else {
-        format!("0x{:x}", block.parse::<u64>()?)
-    };
+    let value_hex = value_to_hex(value)?;
+    let block_param = block_to_param(block)?;
 
     if !quiet {
         eprintln!("Calling debug_traceCall on {}...", rpc);
@@ -1199,39 +1136,14 @@ async fn simulate_via_trace_rpc(
         )
     })?;
 
-    // Build calldata
-    let calldata = if let Some(data) = data {
-        data.clone()
-    } else if let Some(sig) = sig {
-        let mut cmd = Command::new("cast");
-        cmd.arg("calldata").arg(sig);
-        for arg in args {
-            cmd.arg(arg);
-        }
-        let output = cmd.output()?;
-        if !output.status.success() {
-            return Err(anyhow::anyhow!("Failed to encode calldata"));
-        }
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    } else {
-        return Err(anyhow::anyhow!("Must provide --sig or --data"));
-    };
+    let calldata = build_calldata(sig, data, args)?;
 
     let from_addr = from
         .clone()
         .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string());
 
-    let value_hex = if value == "0" {
-        "0x0".to_string()
-    } else {
-        format!("0x{:x}", value.parse::<u128>()?)
-    };
-
-    let block_param = if block == "latest" {
-        "latest".to_string()
-    } else {
-        format!("0x{:x}", block.parse::<u64>()?)
-    };
+    let value_hex = value_to_hex(value)?;
+    let block_param = block_to_param(block)?;
 
     if !quiet {
         eprintln!("Calling trace_call on {}...", rpc);
@@ -1750,4 +1662,115 @@ async fn unshare_simulation_tenderly(
     println!("Simulation {} is now private.", id);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_value_to_hex_zero() {
+        assert_eq!(value_to_hex("0").unwrap(), "0x0");
+    }
+
+    #[test]
+    fn test_value_to_hex_small() {
+        assert_eq!(value_to_hex("255").unwrap(), "0xff");
+    }
+
+    #[test]
+    fn test_value_to_hex_large() {
+        // 1 ETH in wei
+        assert_eq!(
+            value_to_hex("1000000000000000000").unwrap(),
+            "0xde0b6b3a7640000"
+        );
+    }
+
+    #[test]
+    fn test_value_to_hex_invalid() {
+        assert!(value_to_hex("not_a_number").is_err());
+    }
+
+    #[test]
+    fn test_block_to_param_latest() {
+        assert_eq!(block_to_param("latest").unwrap(), "latest");
+    }
+
+    #[test]
+    fn test_block_to_param_pending() {
+        assert_eq!(block_to_param("pending").unwrap(), "pending");
+    }
+
+    #[test]
+    fn test_block_to_param_earliest() {
+        assert_eq!(block_to_param("earliest").unwrap(), "earliest");
+    }
+
+    #[test]
+    fn test_block_to_param_number() {
+        assert_eq!(block_to_param("12345678").unwrap(), "0xbc614e");
+    }
+
+    #[test]
+    fn test_block_to_param_invalid() {
+        assert!(block_to_param("not_a_block").is_err());
+    }
+
+    #[test]
+    fn test_build_state_overrides_empty() {
+        let result = build_state_overrides(&[], &[], &[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_build_state_overrides_balance() {
+        let balance = vec!["0x1234567890abcdef=1000000".to_string()];
+        let result = build_state_overrides(&balance, &[], &[]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("0x1234567890abcdef"));
+    }
+
+    #[test]
+    fn test_build_state_overrides_storage() {
+        let storage = vec!["0xaddr:0x0=0x1".to_string()];
+        let result = build_state_overrides(&[], &storage, &[]).unwrap();
+        assert_eq!(result.len(), 1);
+        let entry = result.get("0xaddr").unwrap();
+        assert!(entry.get("storage").is_some());
+    }
+
+    #[test]
+    fn test_build_state_overrides_code() {
+        let code = vec!["0xaddr=0x6080".to_string()];
+        let result = build_state_overrides(&[], &[], &code).unwrap();
+        assert_eq!(result.len(), 1);
+        let entry = result.get("0xaddr").unwrap();
+        assert_eq!(entry.get("code").unwrap(), "0x6080");
+    }
+
+    #[test]
+    fn test_build_state_overrides_invalid_balance_format() {
+        let balance = vec!["invalid_format".to_string()];
+        assert!(build_state_overrides(&balance, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn test_build_state_overrides_invalid_storage_format() {
+        let storage = vec!["missing_colon=value".to_string()];
+        assert!(build_state_overrides(&[], &storage, &[]).is_err());
+    }
+
+    #[test]
+    fn test_build_calldata_with_data() {
+        let data = Some("0x1234".to_string());
+        let result = build_calldata(&None, &data, &[]).unwrap();
+        assert_eq!(result, "0x1234");
+    }
+
+    #[test]
+    fn test_build_calldata_no_sig_no_data() {
+        let result = build_calldata(&None, &None, &[]);
+        assert!(result.is_err());
+    }
 }
