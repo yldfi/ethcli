@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/michaeldim/ethcli/compare/v0.14.1...v0.15.0) (2026-01-10)
+
+
+### Features
+
+* resolve address labels in simulate commands ([bd7da93](https://github.com/michaeldim/ethcli/commit/bd7da932f3370da64b312ad26316f1de22e890bf))
+
 ## [0.14.1](https://github.com/michaeldim/ethcli/compare/v0.14.0...v0.14.1) (2026-01-10)
 
 
