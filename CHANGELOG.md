@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/michaeldim/ethcli/compare/v0.20.1...v0.21.0) (2026-01-12)
+
+
+### Features
+
+* **tenderly:** add admin RPC and delivery channels ([f5e16e3](https://github.com/michaeldim/ethcli/commit/f5e16e31772698e86a4093e9955bebb529ec5ab5))
+
 ## [0.20.0](https://github.com/michaeldim/ethcli/compare/v0.19.0...v0.20.0) (2026-01-12)
 
 
