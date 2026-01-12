@@ -87,6 +87,15 @@ pub enum TenderlyCommands {
         #[command(flatten)]
         tenderly: TenderlyArgs,
     },
+
+    /// Delivery channels (Slack, Discord, Email, etc.)
+    Channels {
+        #[command(subcommand)]
+        action: ChannelsCommands,
+
+        #[command(flatten)]
+        tenderly: TenderlyArgs,
+    },
 }
 
 // ============================================================================
@@ -243,6 +252,151 @@ pub enum VnetsCommands {
         #[arg(long, default_value = "0")]
         value: String,
     },
+
+    /// Admin RPC commands (balance, time, storage, snapshots)
+    Admin {
+        #[command(subcommand)]
+        action: AdminCommands,
+
+        /// VNet ID
+        #[arg(long)]
+        vnet: String,
+    },
+}
+
+// ============================================================================
+// Admin RPC Commands
+// ============================================================================
+
+#[derive(Subcommand)]
+pub enum AdminCommands {
+    /// Set ETH balance for an address
+    SetBalance {
+        /// Account address
+        address: String,
+
+        /// Balance amount (wei, or use suffix: 1eth, 100gwei)
+        amount: String,
+    },
+
+    /// Add ETH to an address balance
+    AddBalance {
+        /// Account address
+        address: String,
+
+        /// Amount to add (wei, or use suffix: 1eth, 100gwei)
+        amount: String,
+    },
+
+    /// Set ERC20 token balance for a wallet
+    SetErc20Balance {
+        /// ERC20 token contract address
+        #[arg(long)]
+        token: String,
+
+        /// Wallet address
+        #[arg(long)]
+        wallet: String,
+
+        /// Token amount (in smallest unit, e.g., wei for 18 decimals)
+        amount: String,
+    },
+
+    /// Set maximum possible ERC20 token balance
+    SetMaxErc20Balance {
+        /// ERC20 token contract address
+        #[arg(long)]
+        token: String,
+
+        /// Wallet address
+        #[arg(long)]
+        wallet: String,
+    },
+
+    /// Advance blockchain time by seconds
+    IncreaseTime {
+        /// Seconds to advance
+        seconds: u64,
+    },
+
+    /// Set timestamp for the next block (creates empty block)
+    SetTimestamp {
+        /// Unix epoch timestamp in seconds
+        timestamp: u64,
+    },
+
+    /// Set timestamp for next block (no empty block)
+    SetTimestampNoMine {
+        /// Unix epoch timestamp in seconds
+        timestamp: u64,
+    },
+
+    /// Skip a number of blocks
+    IncreaseBlocks {
+        /// Number of blocks to skip
+        blocks: u64,
+    },
+
+    /// Create a state snapshot
+    Snapshot,
+
+    /// Revert to a previous snapshot
+    Revert {
+        /// Snapshot ID
+        snapshot_id: String,
+    },
+
+    /// Set storage at a specific slot
+    SetStorage {
+        /// Contract address
+        #[arg(long)]
+        address: String,
+
+        /// Storage slot (32-byte hex)
+        #[arg(long)]
+        slot: String,
+
+        /// Value to set (32-byte hex)
+        #[arg(long)]
+        value: String,
+    },
+
+    /// Set bytecode at an address
+    SetCode {
+        /// Address to set code at
+        #[arg(long)]
+        address: String,
+
+        /// Bytecode (hex string)
+        #[arg(long)]
+        code: String,
+    },
+
+    /// Send an unsigned transaction
+    SendTx {
+        /// From address
+        #[arg(long)]
+        from: String,
+
+        /// To address
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Transaction data (hex)
+        #[arg(long)]
+        data: Option<String>,
+
+        /// Value in wei
+        #[arg(long)]
+        value: Option<String>,
+
+        /// Gas limit
+        #[arg(long)]
+        gas: Option<String>,
+    },
+
+    /// Get the latest transaction ID
+    GetLatest,
 }
 
 // ============================================================================
@@ -642,6 +796,22 @@ pub enum NetworksCommands {
 }
 
 // ============================================================================
+// Channels Commands
+// ============================================================================
+
+#[derive(Subcommand)]
+pub enum ChannelsCommands {
+    /// List all delivery channels (account + project)
+    List,
+
+    /// List account-level delivery channels
+    Account,
+
+    /// List project-level delivery channels
+    Project,
+}
+
+// ============================================================================
 // Handler
 // ============================================================================
 
@@ -670,6 +840,9 @@ pub async fn handle(
         }
         TenderlyCommands::Networks { action, tenderly } => {
             handle_networks(action, tenderly, quiet).await
+        }
+        TenderlyCommands::Channels { action, tenderly } => {
+            handle_channels(action, tenderly, quiet).await
         }
     }
 }
@@ -875,9 +1048,222 @@ async fn handle_vnets(
             let tx = client.vnets().send_transaction(vnet, &request).await?;
             println!("{}", serde_json::to_string_pretty(&tx)?);
         }
+
+        VnetsCommands::Admin { action, vnet } => {
+            handle_admin(action, vnet, &client, quiet).await?;
+        }
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Admin RPC Handler
+// ============================================================================
+
+async fn handle_admin(
+    cmd: &AdminCommands,
+    vnet_id: &str,
+    client: &tndrly::Client,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    if !quiet {
+        eprintln!("Connecting to Admin RPC for VNet {}...", vnet_id);
+    }
+
+    let admin = client.vnets().admin_rpc(vnet_id).await?;
+
+    match cmd {
+        AdminCommands::SetBalance { address, amount } => {
+            validate_address(address)?;
+            let amount_wei = parse_eth_amount(amount)?;
+            if !quiet {
+                eprintln!("Setting balance for {} to {} wei...", address, amount_wei);
+            }
+            let hash = admin.set_balance(address, &amount_wei).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::AddBalance { address, amount } => {
+            validate_address(address)?;
+            let amount_wei = parse_eth_amount(amount)?;
+            if !quiet {
+                eprintln!("Adding {} wei to {}...", amount_wei, address);
+            }
+            let hash = admin.add_balance(address, &amount_wei).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::SetErc20Balance {
+            token,
+            wallet,
+            amount,
+        } => {
+            validate_address(token)?;
+            validate_address(wallet)?;
+            if !quiet {
+                eprintln!("Setting ERC20 balance for {} on {}...", wallet, token);
+            }
+            let hash = admin.set_erc20_balance(token, wallet, amount).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::SetMaxErc20Balance { token, wallet } => {
+            validate_address(token)?;
+            validate_address(wallet)?;
+            if !quiet {
+                eprintln!("Setting max ERC20 balance for {} on {}...", wallet, token);
+            }
+            let hash = admin.set_max_erc20_balance(token, wallet).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::IncreaseTime { seconds } => {
+            if !quiet {
+                eprintln!("Advancing time by {} seconds...", seconds);
+            }
+            let hash = admin.increase_time(*seconds).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::SetTimestamp { timestamp } => {
+            if !quiet {
+                eprintln!("Setting next block timestamp to {}...", timestamp);
+            }
+            let result = admin.set_next_block_timestamp(*timestamp).await?;
+            println!("{}", result);
+        }
+
+        AdminCommands::SetTimestampNoMine { timestamp } => {
+            if !quiet {
+                eprintln!("Setting next block timestamp to {} (no mine)...", timestamp);
+            }
+            let result = admin.set_next_block_timestamp_no_mine(*timestamp).await?;
+            println!("{}", result);
+        }
+
+        AdminCommands::IncreaseBlocks { blocks } => {
+            if !quiet {
+                eprintln!("Skipping {} blocks...", blocks);
+            }
+            let hash = admin.increase_blocks(*blocks).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::Snapshot => {
+            if !quiet {
+                eprintln!("Creating snapshot...");
+            }
+            let snapshot_id = admin.snapshot().await?;
+            println!("{}", snapshot_id);
+        }
+
+        AdminCommands::Revert { snapshot_id } => {
+            if !quiet {
+                eprintln!("Reverting to snapshot {}...", snapshot_id);
+            }
+            let success = admin.revert(snapshot_id).await?;
+            if success {
+                println!("Reverted successfully");
+            } else {
+                anyhow::bail!("Revert failed");
+            }
+        }
+
+        AdminCommands::SetStorage {
+            address,
+            slot,
+            value,
+        } => {
+            validate_address(address)?;
+            if !quiet {
+                eprintln!("Setting storage at {} slot {}...", address, slot);
+            }
+            let hash = admin.set_storage_at(address, slot, value).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::SetCode { address, code } => {
+            validate_address(address)?;
+            if !quiet {
+                eprintln!("Setting code at {}...", address);
+            }
+            let hash = admin.set_code(address, code).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::SendTx {
+            from,
+            to,
+            data,
+            value,
+            gas,
+        } => {
+            validate_address(from)?;
+            if let Some(to_addr) = to {
+                validate_address(to_addr)?;
+            }
+            if !quiet {
+                eprintln!("Sending transaction from {}...", from);
+            }
+
+            let mut tx = tndrly::vnets::admin_rpc::SendTransactionParams::new(from);
+            if let Some(to_addr) = to {
+                tx = tx.to(to_addr);
+            }
+            if let Some(d) = data {
+                tx = tx.data(d);
+            }
+            if let Some(v) = value {
+                tx = tx.value(v);
+            }
+            if let Some(g) = gas {
+                tx = tx.gas(g);
+            }
+
+            let hash = admin.send_transaction(&tx).await?;
+            println!("{}", hash);
+        }
+
+        AdminCommands::GetLatest => {
+            if !quiet {
+                eprintln!("Getting latest transaction ID...");
+            }
+            let id = admin.get_latest().await?;
+            println!("{}", id);
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse ETH amount with optional suffix (e.g., "1eth", "100gwei", "1000000000000000000")
+fn parse_eth_amount(amount: &str) -> anyhow::Result<String> {
+    let amount_lower = amount.to_lowercase();
+
+    if amount_lower.ends_with("eth") || amount_lower.ends_with("ether") {
+        let num_str = amount_lower
+            .trim_end_matches("ether")
+            .trim_end_matches("eth");
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid ETH amount: {}", amount))?;
+        let wei = (num * 1e18) as u128;
+        Ok(wei.to_string())
+    } else if amount_lower.ends_with("gwei") {
+        let num_str = amount_lower.trim_end_matches("gwei");
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid gwei amount: {}", amount))?;
+        let wei = (num * 1e9) as u128;
+        Ok(wei.to_string())
+    } else if amount_lower.ends_with("wei") {
+        let num_str = amount_lower.trim_end_matches("wei");
+        Ok(num_str.to_string())
+    } else {
+        // Assume wei if no suffix
+        Ok(amount.to_string())
+    }
 }
 
 // ============================================================================
@@ -1423,6 +1809,52 @@ async fn handle_networks(
             }
             let networks = client.networks().with_vnet_support().await?;
             println!("{}", serde_json::to_string_pretty(&networks)?);
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Channels Handler
+// ============================================================================
+
+async fn handle_channels(
+    cmd: &ChannelsCommands,
+    tenderly: &TenderlyArgs,
+    quiet: bool,
+) -> anyhow::Result<()> {
+    let client = tenderly.create_client()?;
+
+    match cmd {
+        ChannelsCommands::List => {
+            if !quiet {
+                eprintln!("Listing all delivery channels...");
+            }
+            let channels = client.delivery_channels().list_all().await?;
+            println!("{}", serde_json::to_string_pretty(&channels)?);
+        }
+
+        ChannelsCommands::Account => {
+            if !quiet {
+                eprintln!("Listing account-level delivery channels...");
+            }
+            let response = client.delivery_channels().list_account().await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response.delivery_channels)?
+            );
+        }
+
+        ChannelsCommands::Project => {
+            if !quiet {
+                eprintln!("Listing project-level delivery channels...");
+            }
+            let response = client.delivery_channels().list_project().await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response.delivery_channels)?
+            );
         }
     }
 

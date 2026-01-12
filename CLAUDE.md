@@ -77,27 +77,48 @@ Requires `TENDERLY_ACCESS_KEY` environment variable. Most commands also need `--
 ```bash
 # Virtual TestNets (VNets)
 ethcli tenderly vnets list --project <slug> --account <slug>
-ethcli tenderly vnets create --project <slug> --account <slug> --display-name "My VNet" --fork-chain-id 1
+ethcli tenderly vnets create --slug <slug> --name "My VNet" --network-id 1 --project <slug> --account <slug>
 ethcli tenderly vnets get <vnet-id> --project <slug> --account <slug>
 ethcli tenderly vnets delete <vnet-id> --project <slug> --account <slug>
-ethcli tenderly vnets admin-rpc <vnet-id> --project <slug> --account <slug>
-ethcli tenderly vnets faucet-rpc <vnet-id> --project <slug> --account <slug>
+ethcli tenderly vnets rpc <vnet-id> --project <slug> --account <slug>
+
+# VNet Admin RPC - Balance Management
+ethcli tenderly vnets admin --vnet <id> set-balance <address> 10eth --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> add-balance <address> 1eth --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> set-erc20-balance --token <token> --wallet <wallet> <amount> --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> set-max-erc20-balance --token <token> --wallet <wallet> --project <slug> --account <slug>
+
+# VNet Admin RPC - Time Manipulation
+ethcli tenderly vnets admin --vnet <id> increase-time 3600 --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> set-timestamp <epoch> --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> increase-blocks 10 --project <slug> --account <slug>
+
+# VNet Admin RPC - State Management
+ethcli tenderly vnets admin --vnet <id> snapshot --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> revert <snapshot-id> --project <slug> --account <slug>
+
+# VNet Admin RPC - Storage/Code
+ethcli tenderly vnets admin --vnet <id> set-storage --address <addr> --slot <hex> --value <hex> --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> set-code --address <addr> --code <bytecode> --project <slug> --account <slug>
+
+# VNet Admin RPC - Transactions
+ethcli tenderly vnets admin --vnet <id> send-tx --from <addr> --to <addr> --value 0x1 --project <slug> --account <slug>
+ethcli tenderly vnets admin --vnet <id> get-latest --project <slug> --account <slug>
 
 # Virtual Wallets
 ethcli tenderly wallets list --project <slug> --account <slug>
-ethcli tenderly wallets create --project <slug> --account <slug>
-ethcli tenderly wallets get <wallet-id> --project <slug> --account <slug>
-ethcli tenderly wallets fund <wallet-id> <amount> --project <slug> --account <slug>
+ethcli tenderly wallets add <address> --project <slug> --account <slug>
+ethcli tenderly wallets get <address> --network 1 --project <slug> --account <slug>
 
 # Contracts
 ethcli tenderly contracts list --project <slug> --account <slug>
-ethcli tenderly contracts get <address> --network <id> --project <slug> --account <slug>
-ethcli tenderly contracts add <address> --network <id> --project <slug> --account <slug>
-ethcli tenderly contracts verify <address> --network <id> --name <name> --source <file> --compiler <ver> --project <slug> --account <slug>
+ethcli tenderly contracts get <address> --network 1 --project <slug> --account <slug>
+ethcli tenderly contracts add <address> --network 1 --project <slug> --account <slug>
+ethcli tenderly contracts verify <address> --network 1 --name <name> --source <file> --compiler <ver> --project <slug> --account <slug>
 
 # Alerts
 ethcli tenderly alerts list --project <slug> --account <slug>
-ethcli tenderly alerts create --name "Alert" --type successful_tx --target-type address --target-value 0x... --project <slug> --account <slug>
+ethcli tenderly alerts create --name "Alert" --alert-type successful_transaction --network 1 --project <slug> --account <slug>
 ethcli tenderly alerts delete <alert-id> --project <slug> --account <slug>
 ethcli tenderly alerts webhooks list --project <slug> --account <slug>
 ethcli tenderly alerts webhooks create --name "Hook" --url https://... --project <slug> --account <slug>
@@ -111,6 +132,11 @@ ethcli tenderly actions logs <action-id> --project <slug> --account <slug>
 # Networks
 ethcli tenderly networks list
 ethcli tenderly networks get <network-id>
+
+# Delivery Channels (Slack, Discord, Email, etc.)
+ethcli tenderly channels list --project <slug> --account <slug>
+ethcli tenderly channels account --project <slug> --account <slug>
+ethcli tenderly channels project --project <slug> --account <slug>
 
 # Simulation (alias to ethcli simulate)
 ethcli tenderly simulate call <contract> --sig "balanceOf(address)" <args>
