@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/michaeldim/ethcli/compare/v0.21.0...v0.21.1) (2026-01-12)
+
+
+### Bug Fixes
+
+* **tenderly:** update for tndrly 0.3.1 API changes ([181984a](https://github.com/michaeldim/ethcli/commit/181984adef32521ba6bc028b1a8dfbb3ad8dde62))
+
 ## [0.21.0](https://github.com/michaeldim/ethcli/compare/v0.20.1...v0.21.0) (2026-01-12)
 
 
