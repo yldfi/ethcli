@@ -75,6 +75,7 @@ rand = "0.8"
 hex = "0.4"
 dirs = "5"
 regex = "1.11"
+tndrly = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -6,6 +6,10 @@ use crate::config::{AddressBook, Chain, ConfigFile};
 use crate::rpc::get_rpc_url;
 use clap::{Args, Subcommand, ValueEnum};
 use std::process::Command;
+use tndrly::simulation::{
+    AccessListEntry, BlockHeaderOverride, BundleSimulationRequest, SimulationRequest,
+    SimulationType as TndrlySimulationType,
+};
 
 /// Tenderly API credentials - shared across multiple subcommands
 #[derive(Args, Clone, Debug)]
@@ -451,6 +455,18 @@ fn get_tenderly_credentials(
     Ok((api_key, acct, proj))
 }
 
+/// Create a tndrly::Client from args/env/config credentials
+fn create_tenderly_client(
+    key: &Option<String>,
+    account: &Option<String>,
+    project: &Option<String>,
+) -> anyhow::Result<tndrly::Client> {
+    let (api_key, acct, proj) = get_tenderly_credentials(key, account, project)?;
+    let config = tndrly::Config::new(api_key, acct, proj);
+    tndrly::Client::new(config)
+        .map_err(|e| anyhow::anyhow!("Failed to create Tenderly client: {}", e))
+}
+
 /// Simulation backend
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum SimulateVia {
@@ -467,7 +483,31 @@ pub enum SimulateVia {
     Trace,
 }
 
+/// Simulation type (for Tenderly API)
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum SimulationType {
+    /// Full simulation with decoded results
+    #[default]
+    Full,
+    /// Quick simulation with less data (faster)
+    Quick,
+    /// ABI-only simulation (decode only)
+    Abi,
+}
+
+impl SimulationType {
+    /// Convert to tndrly SimulationType
+    fn to_tndrly(self) -> TndrlySimulationType {
+        match self {
+            SimulationType::Full => TndrlySimulationType::Full,
+            SimulationType::Quick => TndrlySimulationType::Quick,
+            SimulationType::Abi => TndrlySimulationType::Abi,
+        }
+    }
+}
+
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum SimulateCommands {
     /// Simulate a transaction call (without sending)
     Call {
@@ -520,6 +560,74 @@ pub enum SimulateCommands {
         /// Override block timestamp (unix seconds)
         #[arg(long)]
         block_timestamp: Option<u64>,
+
+        /// Override block number (for Tenderly)
+        #[arg(long)]
+        block_number_override: Option<u64>,
+
+        /// Override block gas limit
+        #[arg(long)]
+        block_gas_limit: Option<u64>,
+
+        /// Override block coinbase/miner address
+        #[arg(long)]
+        block_coinbase: Option<String>,
+
+        /// Override block difficulty
+        #[arg(long)]
+        block_difficulty: Option<u64>,
+
+        /// Override block base fee per gas (wei)
+        #[arg(long)]
+        block_base_fee: Option<u64>,
+
+        /// Transaction index within the block
+        #[arg(long)]
+        transaction_index: Option<u64>,
+
+        /// State override: set nonce (format: address=nonce, can repeat)
+        #[arg(long = "nonce-override", action = clap::ArgAction::Append)]
+        nonce_overrides: Vec<String>,
+
+        /// Enable precise gas estimation (Tenderly)
+        #[arg(long)]
+        estimate_gas: bool,
+
+        /// Generate EIP-2930 access list in response (Tenderly)
+        #[arg(long)]
+        generate_access_list: bool,
+
+        /// Provide access list (JSON format or @file.json)
+        #[arg(long)]
+        access_list: Option<String>,
+
+        /// Simulation type: full (default), quick (faster, less data), or abi (decode only)
+        #[arg(long, value_enum, default_value = "full")]
+        simulation_type: SimulationType,
+
+        /// Network ID to simulate on (default: 1 for Ethereum mainnet)
+        #[arg(long)]
+        network_id: Option<String>,
+
+        /// L1 block number (for L2 simulations like Optimism)
+        #[arg(long)]
+        l1_block_number: Option<u64>,
+
+        /// L1 timestamp (for L2 simulations)
+        #[arg(long)]
+        l1_timestamp: Option<u64>,
+
+        /// L1 message sender (for L2 cross-chain simulations)
+        #[arg(long)]
+        l1_message_sender: Option<String>,
+
+        /// Mark as deposit transaction (Optimism Bedrock)
+        #[arg(long)]
+        deposit_tx: bool,
+
+        /// Mark as system transaction (Optimism Bedrock)
+        #[arg(long)]
+        system_tx: bool,
 
         /// Simulation backend
         #[arg(long, value_enum, default_value = "cast")]
@@ -692,7 +800,88 @@ pub async fn handle(
             save,
             dry_run,
             show_secrets,
-        } => match via {
+            simulation_type,
+            network_id,
+            transaction_index,
+            estimate_gas,
+            generate_access_list,
+            access_list,
+            l1_block_number,
+            l1_timestamp,
+            l1_message_sender,
+            deposit_tx,
+            system_tx,
+            block_gas_limit,
+            block_coinbase,
+            block_difficulty,
+            block_base_fee,
+            ..  // Remaining fields (nonce_overrides)
+        } => {
+            // Warn if Tenderly-exclusive flags are used with non-Tenderly backends
+            if !matches!(via, SimulateVia::Tenderly) {
+                let mut tenderly_only = Vec::new();
+
+                // Truly Tenderly-exclusive features
+                if *save { tenderly_only.push("--save"); }
+                if *estimate_gas { tenderly_only.push("--estimate-gas"); }
+                if *generate_access_list { tenderly_only.push("--generate-access-list"); }
+                if !matches!(simulation_type, SimulationType::Full) { tenderly_only.push("--simulation-type"); }
+
+                // L2/Optimism params - Tenderly-specific
+                if l1_block_number.is_some() { tenderly_only.push("--l1-block-number"); }
+                if l1_timestamp.is_some() { tenderly_only.push("--l1-timestamp"); }
+                if l1_message_sender.is_some() { tenderly_only.push("--l1-message-sender"); }
+                if *deposit_tx { tenderly_only.push("--deposit-tx"); }
+                if *system_tx { tenderly_only.push("--system-tx"); }
+
+                if !tenderly_only.is_empty() {
+                    eprintln!("Warning: The following flags only work with --via tenderly and will be ignored:");
+                    eprintln!("  {}", tenderly_only.join(", "));
+                    eprintln!();
+                }
+
+                // Warn about flags that don't work with cast/anvil
+                // State overrides DO work with debug/trace backends
+                if matches!(via, SimulateVia::Cast | SimulateVia::Anvil) {
+                    let mut not_supported = Vec::new();
+                    if !balance_overrides.is_empty() || !storage_overrides.is_empty() || !code_overrides.is_empty() {
+                        not_supported.push("state overrides");
+                    }
+                    if block_timestamp.is_some() || block_gas_limit.is_some() || block_coinbase.is_some()
+                        || block_difficulty.is_some() || block_base_fee.is_some() {
+                        not_supported.push("block header overrides");
+                    }
+                    if access_list.is_some() { not_supported.push("--access-list"); }
+                    if transaction_index.is_some() { not_supported.push("--transaction-index"); }
+                    if network_id.is_some() { not_supported.push("--network-id"); }
+
+                    if !not_supported.is_empty() {
+                        eprintln!("Warning: {} not supported for --via {:?}, use --via tenderly or --via debug/trace",
+                            not_supported.join(", "), via);
+                        eprintln!();
+                    }
+                }
+
+                // Warn about flags not yet supported for debug/trace
+                if matches!(via, SimulateVia::Debug | SimulateVia::Trace) {
+                    let mut not_wired = Vec::new();
+                    if block_timestamp.is_some() || block_gas_limit.is_some() || block_coinbase.is_some()
+                        || block_difficulty.is_some() || block_base_fee.is_some() {
+                        not_wired.push("block header overrides");
+                    }
+                    if access_list.is_some() { not_wired.push("--access-list"); }
+                    if transaction_index.is_some() { not_wired.push("--transaction-index"); }
+                    if network_id.is_some() { not_wired.push("--network-id"); }
+
+                    if !not_wired.is_empty() {
+                        eprintln!("Warning: {} not yet supported for --via {:?}, use --via tenderly",
+                            not_wired.join(", "), via);
+                        eprintln!();
+                    }
+                }
+            }
+
+            match via {
             SimulateVia::Cast => {
                 if dry_run.is_some() {
                     return Err(anyhow::anyhow!("--dry-run not supported for cast backend. Use --via tenderly, debug, or trace"));
@@ -723,6 +912,7 @@ pub async fn handle(
                     storage_overrides,
                     code_overrides,
                     *block_timestamp,
+                    *simulation_type,
                     *save,
                     &tenderly.tenderly_key,
                     &tenderly.tenderly_account,
@@ -730,6 +920,20 @@ pub async fn handle(
                     *dry_run,
                     *show_secrets,
                     quiet,
+                    network_id,
+                    *transaction_index,
+                    *estimate_gas,
+                    *generate_access_list,
+                    access_list,
+                    *l1_block_number,
+                    *l1_timestamp,
+                    l1_message_sender,
+                    *deposit_tx,
+                    *system_tx,
+                    *block_gas_limit,
+                    block_coinbase,
+                    *block_difficulty,
+                    *block_base_fee,
                 )
                 .await
             }
@@ -744,6 +948,9 @@ pub async fn handle(
                     block,
                     rpc_url,
                     chain,
+                    balance_overrides,
+                    storage_overrides,
+                    code_overrides,
                     *dry_run,
                     *show_secrets,
                     quiet,
@@ -761,13 +968,16 @@ pub async fn handle(
                     block,
                     rpc_url,
                     chain,
+                    balance_overrides,
+                    storage_overrides,
+                    code_overrides,
                     *dry_run,
                     *show_secrets,
                     quiet,
                 )
                 .await
             }
-        },
+        }},
 
         SimulateCommands::Tx {
             hash,
@@ -1099,6 +1309,7 @@ async fn simulate_via_tenderly(
     storage_overrides: &[String],
     code_overrides: &[String],
     block_timestamp: Option<u64>,
+    simulation_type: SimulationType,
     save: bool,
     tenderly_key: &Option<String>,
     tenderly_account: &Option<String>,
@@ -1106,15 +1317,24 @@ async fn simulate_via_tenderly(
     dry_run: Option<DryRunFormat>,
     show_secrets: bool,
     quiet: bool,
+    network_id: &Option<String>,
+    transaction_index: Option<u64>,
+    estimate_gas: bool,
+    generate_access_list: bool,
+    access_list: &Option<String>,
+    l1_block_number: Option<u64>,
+    l1_timestamp: Option<u64>,
+    l1_message_sender: &Option<String>,
+    deposit_tx: bool,
+    system_tx: bool,
+    block_gas_limit: Option<u64>,
+    block_coinbase: &Option<String>,
+    block_difficulty: Option<u64>,
+    block_base_fee: Option<u64>,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     // Resolve target address
     let resolved_to = resolve_address(to);
-
     let calldata = build_calldata(sig, data, args)?;
-
     let from_addr = from
         .clone()
         .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string());
@@ -1128,104 +1348,215 @@ async fn simulate_via_tenderly(
 
     let value_wei = value_to_hex(value)?;
 
-    // Build request
-    let mut request = serde_json::json!({
-        "network_id": "1",
-        "from": from_addr,
-        "to": resolved_to,
-        "input": calldata,
-        "value": value_wei,
-        "save": save,
-        "save_if_fails": save,
-        "simulation_type": "full"
-    });
+    // Build tndrly SimulationRequest using the builder pattern
+    let mut request = SimulationRequest::new(&from_addr, &resolved_to, &calldata)
+        .value(&value_wei)
+        .simulation_type(simulation_type.to_tndrly())
+        .save(save);
 
     if let Some(bn) = block_number {
-        request["block_number"] = serde_json::json!(bn);
+        request = request.block_number(bn);
     }
 
-    // Add gas parameters
     if let Some(g) = gas {
-        request["gas"] = serde_json::json!(g);
+        request = request.gas(g);
     }
 
     if let Some(gp) = gas_price {
-        request["gas_price"] = serde_json::json!(format!("{}", gp));
+        request = request.gas_price(gp);
     }
 
-    // Build state overrides
-    let state_objects =
-        build_state_overrides(balance_overrides, storage_overrides, code_overrides)?;
-    if !state_objects.is_empty() {
-        request["state_objects"] = serde_json::json!(state_objects);
-    }
-
-    // Add block header overrides
-    if block_timestamp.is_some() {
-        let mut block_header = serde_json::Map::new();
-        if let Some(ts) = block_timestamp {
-            block_header.insert(
-                "timestamp".to_string(),
-                serde_json::json!(format!("0x{:x}", ts)),
-            );
+    // Apply state overrides
+    for override_str in balance_overrides {
+        let parts: Vec<&str> = override_str.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!(
+                "Invalid balance override format: {}. Use address=wei",
+                override_str
+            ));
         }
-        request["block_header"] = serde_json::json!(block_header);
+        request = request.override_balance(parts[0], parts[1]);
     }
 
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/simulate",
-        account, project
-    );
+    for override_str in storage_overrides {
+        let parts: Vec<&str> = override_str.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!(
+                "Invalid storage override format: {}. Use address:slot=value",
+                override_str
+            ));
+        }
+        let addr_slot: Vec<&str> = parts[0].splitn(2, ':').collect();
+        if addr_slot.len() != 2 {
+            return Err(anyhow::anyhow!(
+                "Invalid storage override format: {}. Use address:slot=value",
+                override_str
+            ));
+        }
+        request = request.override_storage(addr_slot[0], addr_slot[1], parts[1]);
+    }
+
+    for override_str in code_overrides {
+        let parts: Vec<&str> = override_str.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!(
+                "Invalid code override format: {}. Use address=bytecode",
+                override_str
+            ));
+        }
+        request = request.override_code(parts[0], parts[1]);
+    }
+
+    // Build block header overrides if any are specified
+    let has_block_header_overrides = block_timestamp.is_some()
+        || block_gas_limit.is_some()
+        || block_coinbase.is_some()
+        || block_difficulty.is_some()
+        || block_base_fee.is_some();
+
+    if has_block_header_overrides {
+        let mut header = BlockHeaderOverride::default();
+
+        if let Some(ts) = block_timestamp {
+            header.timestamp = Some(format!("0x{:x}", ts));
+        }
+        if let Some(gas_limit) = block_gas_limit {
+            header.gas_limit = Some(format!("0x{:x}", gas_limit));
+        }
+        if let Some(ref coinbase) = block_coinbase {
+            header.miner = Some(coinbase.clone());
+        }
+        if let Some(difficulty) = block_difficulty {
+            header.difficulty = Some(format!("0x{:x}", difficulty));
+        }
+        if let Some(base_fee) = block_base_fee {
+            header.base_fee_per_gas = Some(format!("0x{:x}", base_fee));
+        }
+
+        request.block_header = Some(header);
+    }
+
+    // Apply network ID if specified
+    if let Some(nid) = network_id {
+        request = request.network_id(nid);
+    }
+
+    // Apply new Tenderly API parameters (tndrly 0.2+)
+    if let Some(ti) = transaction_index {
+        request = request.transaction_index(ti);
+    }
+
+    if estimate_gas {
+        request = request.estimate_gas(true);
+    }
+
+    if generate_access_list {
+        request = request.generate_access_list(true);
+    }
+
+    // Parse access list if provided (JSON format)
+    if let Some(al_str) = access_list {
+        let al_json = if let Some(path) = al_str.strip_prefix('@') {
+            // Load from file
+            std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("Failed to read access list file {}: {}", path, e))?
+        } else {
+            al_str.clone()
+        };
+        let entries: Vec<AccessListEntry> = serde_json::from_str(&al_json)
+            .map_err(|e| anyhow::anyhow!("Invalid access list JSON: {}", e))?;
+        request = request.access_list(entries);
+    }
+
+    // L2/Optimism parameters
+    if let Some(l1_bn) = l1_block_number {
+        request = request.l1_block_number(l1_bn);
+    }
+
+    if let Some(l1_ts) = l1_timestamp {
+        request = request.l1_timestamp(l1_ts);
+    }
+
+    if let Some(l1_sender) = l1_message_sender {
+        request = request.l1_message_sender(l1_sender);
+    }
+
+    if deposit_tx {
+        request = request.deposit_tx(true);
+    }
+
+    if system_tx {
+        request = request.system_tx(true);
+    }
 
     // Handle dry-run mode - output request without executing
+    // We need to serialize the request to show what would be sent
     if let Some(format) = dry_run {
+        let (api_key, account, project) =
+            get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
+        let url = format!(
+            "https://api.tenderly.co/api/v1/account/{}/project/{}/simulate",
+            account, project
+        );
+        let json_request = serde_json::to_value(&request)?;
         let headers = vec![
             ("X-Access-Key", api_key.as_str()),
             ("Content-Type", "application/json"),
         ];
-        let output = format_request(&url, "POST", &headers, &request, format, show_secrets);
+        let output = format_request(&url, "POST", &headers, &json_request, format, show_secrets);
         println!("{}", output);
         return Ok(());
     }
+
+    let has_state_overrides = !balance_overrides.is_empty()
+        || !storage_overrides.is_empty()
+        || !code_overrides.is_empty();
 
     if !quiet {
         eprintln!("Simulating via Tenderly API...");
         if save {
             eprintln!("  Saving simulation to Tenderly");
         }
-        if !state_objects.is_empty() {
-            eprintln!("  State overrides: {} addresses", state_objects.len());
+        if has_state_overrides {
+            let count = balance_overrides.len() + storage_overrides.len() + code_overrides.len();
+            eprintln!("  State overrides: {} addresses", count);
         }
     }
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("X-Access-Key", &api_key)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    let result: serde_json::Value = response.json().await?;
+    // Create tndrly client and execute simulation
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let result = client
+        .simulation()
+        .simulate(&request)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
     // If saved, show the simulation ID prominently
     if save {
-        if let Some(sim) = result.get("simulation") {
-            if let Some(id) = sim.get("id") {
-                eprintln!("Simulation ID: {}", id);
+        eprintln!("Simulation ID: {}", result.simulation.id);
+    }
+
+    // Display generated access list prominently if requested
+    if generate_access_list {
+        if let Some(ref access_list) = result.generated_access_list {
+            if !access_list.is_empty() {
+                eprintln!("\n=== Generated Access List ===");
+                for entry in access_list {
+                    eprintln!("Address: {}", entry.address);
+                    if !entry.storage_keys.is_empty() {
+                        for key in &entry.storage_keys {
+                            eprintln!("  Storage: {}", key);
+                        }
+                    }
+                }
+                eprintln!();
             }
         }
     }
 
     // Pretty print the result
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let json_result = serde_json::to_value(&result)?;
+    println!("{}", serde_json::to_string_pretty(&json_result)?);
 
     Ok(())
 }
@@ -1318,32 +1649,17 @@ async fn trace_tx_via_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     if !quiet {
         eprintln!("Fetching trace from Tenderly API...");
     }
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/trace/{}",
-        account, project, hash
-    );
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let result = client
+        .simulation()
+        .trace(hash)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
-    let response = client
-        .get(&url)
-        .header("X-Access-Key", api_key)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    let result: serde_json::Value = response.json().await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
 
     Ok(())
@@ -1361,6 +1677,9 @@ async fn simulate_via_debug_rpc(
     block: &str,
     rpc_url: &Option<String>,
     chain: Chain,
+    balance_overrides: &[String],
+    storage_overrides: &[String],
+    code_overrides: &[String],
     dry_run: Option<DryRunFormat>,
     show_secrets: bool,
     quiet: bool,
@@ -1382,6 +1701,22 @@ async fn simulate_via_debug_rpc(
     let value_hex = value_to_hex(value)?;
     let block_param = block_to_param(block)?;
 
+    // Build state overrides if any are provided
+    let state_overrides =
+        build_state_overrides(balance_overrides, storage_overrides, code_overrides)?;
+
+    // Build tracer options with optional state overrides
+    let mut tracer_opts = serde_json::json!({
+        "tracer": "callTracer",
+        "tracerConfig": {
+            "withLog": true
+        }
+    });
+
+    if !state_overrides.is_empty() {
+        tracer_opts["stateOverrides"] = serde_json::to_value(&state_overrides)?;
+    }
+
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "debug_traceCall",
@@ -1393,12 +1728,7 @@ async fn simulate_via_debug_rpc(
                 "value": value_hex
             },
             block_param,
-            {
-                "tracer": "callTracer",
-                "tracerConfig": {
-                    "withLog": true
-                }
-            }
+            tracer_opts
         ],
         "id": 1
     });
@@ -1504,6 +1834,9 @@ async fn simulate_via_trace_rpc(
     block: &str,
     rpc_url: &Option<String>,
     chain: Chain,
+    balance_overrides: &[String],
+    storage_overrides: &[String],
+    code_overrides: &[String],
     dry_run: Option<DryRunFormat>,
     show_secrets: bool,
     quiet: bool,
@@ -1526,20 +1859,34 @@ async fn simulate_via_trace_rpc(
     let value_hex = value_to_hex(value)?;
     let block_param = block_to_param(block)?;
 
-    // trace_call params: [tx_object, ["trace", "vmTrace", "stateDiff"], block_number]
+    // Build state overrides if any are provided
+    let state_overrides =
+        build_state_overrides(balance_overrides, storage_overrides, code_overrides)?;
+
+    // trace_call params: [tx_object, ["trace", "vmTrace", "stateDiff"], block_number, state_overrides?]
+    let mut params = serde_json::json!([
+        {
+            "from": from_addr,
+            "to": resolved_to,
+            "data": calldata,
+            "value": value_hex
+        },
+        ["trace", "vmTrace"],
+        block_param
+    ]);
+
+    // Add state overrides as 4th parameter if any are provided
+    if !state_overrides.is_empty() {
+        params
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(&state_overrides)?);
+    }
+
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "trace_call",
-        "params": [
-            {
-                "from": from_addr,
-                "to": resolved_to,
-                "data": calldata,
-                "value": value_hex
-            },
-            ["trace", "vmTrace"],
-            block_param
-        ],
+        "params": params,
         "id": 1
     });
 
@@ -1639,16 +1986,11 @@ async fn simulate_bundle_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     // Parse transactions from JSON string or file
     let transactions: Vec<serde_json::Value> = if txs.ends_with(".json") {
-        // It's a file path
         let content = std::fs::read_to_string(txs)?;
         serde_json::from_str(&content)?
     } else {
-        // Inline JSON
         serde_json::from_str(txs)?
     };
 
@@ -1663,104 +2005,91 @@ async fn simulate_bundle_tenderly(
         Some(block.parse::<u64>()?)
     };
 
-    // Build simulations array
-    let simulations: Vec<serde_json::Value> = transactions
+    // Build simulation requests for each transaction
+    let simulations: Vec<SimulationRequest> = transactions
         .into_iter()
         .map(|tx| {
-            let mut sim = serde_json::json!({
-                "network_id": "1",
-                "save": save,
-                "save_if_fails": save,
-                "simulation_type": "full"
-            });
+            let from = tx
+                .get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0000000000000000000000000000000000000000");
+            let to = tx
+                .get("to")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0000000000000000000000000000000000000000");
+            let input = tx
+                .get("data")
+                .or_else(|| tx.get("input"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x");
 
-            // Copy transaction fields
-            if let Some(from) = tx.get("from") {
-                sim["from"] = from.clone();
-            }
-            if let Some(to) = tx.get("to") {
-                sim["to"] = to.clone();
-            }
-            if let Some(data) = tx.get("data") {
-                sim["input"] = data.clone();
-            }
-            if let Some(input) = tx.get("input") {
-                sim["input"] = input.clone();
-            }
-            if let Some(value) = tx.get("value") {
-                sim["value"] = value.clone();
-            }
-            if let Some(gas) = tx.get("gas") {
-                sim["gas"] = gas.clone();
-            }
-            if let Some(gas_price) = tx.get("gas_price") {
-                sim["gas_price"] = gas_price.clone();
-            }
+            let mut req = SimulationRequest::new(from, to, input).save(save);
 
+            if let Some(value) = tx.get("value").and_then(|v| v.as_str()) {
+                req = req.value(value);
+            }
+            if let Some(gas) = tx.get("gas").and_then(|v| v.as_u64()) {
+                req = req.gas(gas);
+            }
+            if let Some(gas_price) = tx.get("gas_price").and_then(|v| v.as_u64()) {
+                req = req.gas_price(gas_price);
+            }
             if let Some(bn) = block_number {
-                sim["block_number"] = serde_json::json!(bn);
+                req = req.block_number(bn);
             }
 
-            sim
+            req
         })
         .collect();
 
-    // Build state overrides
+    let tx_count = simulations.len();
+
+    // Build bundle request
+    let mut bundle_request = BundleSimulationRequest::new(simulations);
+
+    // Apply state overrides
     let state_objects =
         build_state_overrides(balance_overrides, storage_overrides, code_overrides)?;
-
-    let mut request = serde_json::json!({
-        "simulations": simulations
-    });
-
     if !state_objects.is_empty() {
-        request["state_objects"] = serde_json::json!(state_objects);
+        // Convert HashMap<String, serde_json::Value> to HashMap<String, tndrly::simulation::StateOverride>
+        let mut overrides = std::collections::HashMap::new();
+        for (addr, val) in state_objects {
+            let state_override: tndrly::simulation::StateOverride = serde_json::from_value(val)?;
+            overrides.insert(addr, state_override);
+        }
+        bundle_request = bundle_request.state_overrides(overrides);
     }
 
     if !quiet {
         eprintln!(
             "Simulating bundle of {} transactions via Tenderly API...",
-            simulations.len()
+            tx_count
         );
         if save {
             eprintln!("  Saving simulation bundle to Tenderly");
         }
     }
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/simulate-bundle",
-        account, project
-    );
-
-    let response = client
-        .post(&url)
-        .header("X-Access-Key", api_key)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    let result: serde_json::Value = response.json().await?;
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let result = client
+        .simulation()
+        .simulate_bundle(&bundle_request)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
     // Show simulation IDs if saved
     if save {
-        if let Some(sims) = result.get("simulation_results").and_then(|s| s.as_array()) {
-            for (i, sim) in sims.iter().enumerate() {
-                if let Some(id) = sim.get("simulation").and_then(|s| s.get("id")) {
-                    eprintln!("Transaction {} simulation ID: {}", i + 1, id);
-                }
-            }
+        for (i, sim_result) in result.simulation_results.iter().enumerate() {
+            eprintln!(
+                "Transaction {} simulation ID: {}",
+                i + 1,
+                sim_result.simulation.id
+            );
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let json_result = serde_json::to_value(&result)?;
+    println!("{}", serde_json::to_string_pretty(&json_result)?);
 
     Ok(())
 }
@@ -1774,76 +2103,43 @@ async fn list_simulations_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     if !quiet {
         eprintln!("Fetching saved simulations from Tenderly...");
     }
 
-    let client = reqwest::Client::new();
-    // Note: Tenderly API uses 1-based page indexing and has issues with page=0
-    let url = if page > 0 {
-        format!(
-            "https://api.tenderly.co/api/v1/account/{}/project/{}/simulations?page={}&perPage={}",
-            account, project, page, limit
-        )
-    } else {
-        format!(
-            "https://api.tenderly.co/api/v1/account/{}/project/{}/simulations?perPage={}",
-            account, project, limit
-        )
-    };
-
-    let response = client
-        .get(&url)
-        .header("X-Access-Key", api_key)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    let result: serde_json::Value = response.json().await?;
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let result = client
+        .simulation()
+        .list(page, limit)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
     // Format output nicely
-    if let Some(simulations) = result.get("simulations").and_then(|s| s.as_array()) {
-        if simulations.is_empty() {
-            println!("No saved simulations found.");
-        } else {
-            println!("Saved Simulations (page {}, {} per page):", page, limit);
-            println!("{}", "─".repeat(80));
-
-            for sim in simulations {
-                let id = sim.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let status = sim.get("status").and_then(|v| v.as_bool());
-                let status_str = match status {
-                    Some(true) => "✓",
-                    Some(false) => "✗",
-                    None => "?",
-                };
-                let created = sim
-                    .get("created_at")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let from = sim.get("from").and_then(|v| v.as_str()).unwrap_or("?");
-                let to = sim.get("to").and_then(|v| v.as_str()).unwrap_or("?");
-
-                println!(
-                    "{} {} | {} -> {} | {}",
-                    status_str,
-                    id,
-                    &from[..from.len().min(10)],
-                    &to[..to.len().min(10)],
-                    created
-                );
-            }
-        }
+    if result.simulations.is_empty() {
+        println!("No saved simulations found.");
     } else {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("Saved Simulations (page {}, {} per page):", page, limit);
+        println!("{}", "─".repeat(80));
+
+        for sim in &result.simulations {
+            let status_str = match sim.status {
+                Some(true) => "✓",
+                Some(false) => "✗",
+                None => "?",
+            };
+            let created = sim.created_at.as_deref().unwrap_or("?");
+            let from = sim.from.as_deref().unwrap_or("?");
+            let to = sim.to.as_deref().unwrap_or("?");
+
+            println!(
+                "{} {} | {} -> {} | {}",
+                status_str,
+                sim.id,
+                &from[..from.len().min(10)],
+                &to[..to.len().min(10)],
+                created
+            );
+        }
     }
 
     Ok(())
@@ -1857,33 +2153,19 @@ async fn get_simulation_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     if !quiet {
         eprintln!("Fetching simulation {} from Tenderly...", id);
     }
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/simulations/{}",
-        account, project, id
-    );
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let result = client
+        .simulation()
+        .get(id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
-    let response = client
-        .get(&url)
-        .header("X-Access-Key", api_key)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    let result: serde_json::Value = response.json().await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let json_result = serde_json::to_value(&result)?;
+    println!("{}", serde_json::to_string_pretty(&json_result)?);
 
     Ok(())
 }
@@ -1896,33 +2178,16 @@ async fn get_simulation_info_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     if !quiet {
         eprintln!("Fetching simulation info for {} from Tenderly...", id);
     }
 
-    let client = reqwest::Client::new();
-    // The info endpoint returns just metadata without full trace
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/simulations/{}/info",
-        account, project, id
-    );
-
-    let response = client
-        .get(&url)
-        .header("X-Access-Key", api_key)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    let result: serde_json::Value = response.json().await?;
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let result = client
+        .simulation()
+        .info(id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
     // Format nicely if possible - info endpoint returns transaction_info, not simulation
     if let Some(tx_info) = result.get("transaction_info") {
@@ -1977,35 +2242,16 @@ async fn share_simulation_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     if !quiet {
         eprintln!("Sharing simulation {} via Tenderly...", id);
     }
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/simulations/{}/share",
-        account, project, id
-    );
-
-    let response = client
-        .post(&url)
-        .header("X-Access-Key", api_key)
-        .header("Content-Type", "application/json")
-        .body("{}") // Empty JSON body required
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
-
-    // Show the public URL
-    let public_url = format!("https://dashboard.tenderly.co/shared/simulation/{}", id);
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    let public_url = client
+        .simulation()
+        .share(id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
     println!("Simulation shared successfully!");
     println!("Public URL: {}", public_url);
@@ -2021,33 +2267,16 @@ async fn unshare_simulation_tenderly(
     tenderly_project: &Option<String>,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let (api_key, account, project) =
-        get_tenderly_credentials(tenderly_key, tenderly_account, tenderly_project)?;
-
     if !quiet {
         eprintln!("Unsharing simulation {} via Tenderly...", id);
     }
 
-    let client = reqwest::Client::new();
-    let url = format!(
-        "https://api.tenderly.co/api/v1/account/{}/project/{}/simulations/{}/unshare",
-        account, project, id
-    );
-
-    // POST request to unshare endpoint
-    let response = client
-        .post(&url)
-        .header("X-Access-Key", api_key)
-        .header("Content-Type", "application/json")
-        .body("{}")
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await?;
-        return Err(anyhow::anyhow!("Tenderly API error {}: {}", status, text));
-    }
+    let client = create_tenderly_client(tenderly_key, tenderly_account, tenderly_project)?;
+    client
+        .simulation()
+        .unshare(id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Tenderly API error: {}", e))?;
 
     println!("Simulation {} is now private.", id);
 
