@@ -42,6 +42,7 @@ ethcli token      # Token operations (info, holders, balance)
 ethcli gas        # Gas price oracle and estimates
 ethcli sig        # Signature lookup (function selectors, event topics)
 ethcli simulate   # Transaction simulation and tracing
+ethcli tenderly   # Tenderly API (vnets, wallets, contracts, alerts, actions)
 ethcli cast       # Type conversions, hashing, encoding
 ethcli rpc        # Direct RPC calls
 ethcli ens        # ENS name resolution
@@ -67,6 +68,52 @@ ethcli simulate call ... --via anvil     # Forks mainnet with Anvil
 ethcli simulate call ... --via tenderly  # Uses Tenderly API (rich output)
 ethcli simulate call ... --via debug     # Uses debug_traceCall RPC
 ethcli simulate call ... --via trace     # Uses trace_call RPC (Erigon/OpenEthereum)
+```
+
+## Tenderly Commands
+
+Requires `TENDERLY_ACCESS_KEY` environment variable. Most commands also need `--project` and `--account` flags.
+
+```bash
+# Virtual TestNets (VNets)
+ethcli tenderly vnets list --project <slug> --account <slug>
+ethcli tenderly vnets create --project <slug> --account <slug> --display-name "My VNet" --fork-chain-id 1
+ethcli tenderly vnets get <vnet-id> --project <slug> --account <slug>
+ethcli tenderly vnets delete <vnet-id> --project <slug> --account <slug>
+ethcli tenderly vnets admin-rpc <vnet-id> --project <slug> --account <slug>
+ethcli tenderly vnets faucet-rpc <vnet-id> --project <slug> --account <slug>
+
+# Virtual Wallets
+ethcli tenderly wallets list --project <slug> --account <slug>
+ethcli tenderly wallets create --project <slug> --account <slug>
+ethcli tenderly wallets get <wallet-id> --project <slug> --account <slug>
+ethcli tenderly wallets fund <wallet-id> <amount> --project <slug> --account <slug>
+
+# Contracts
+ethcli tenderly contracts list --project <slug> --account <slug>
+ethcli tenderly contracts get <address> --network <id> --project <slug> --account <slug>
+ethcli tenderly contracts add <address> --network <id> --project <slug> --account <slug>
+ethcli tenderly contracts verify <address> --network <id> --name <name> --source <file> --compiler <ver> --project <slug> --account <slug>
+
+# Alerts
+ethcli tenderly alerts list --project <slug> --account <slug>
+ethcli tenderly alerts create --name "Alert" --type successful_tx --target-type address --target-value 0x... --project <slug> --account <slug>
+ethcli tenderly alerts delete <alert-id> --project <slug> --account <slug>
+ethcli tenderly alerts webhooks list --project <slug> --account <slug>
+ethcli tenderly alerts webhooks create --name "Hook" --url https://... --project <slug> --account <slug>
+
+# Web3 Actions
+ethcli tenderly actions list --project <slug> --account <slug>
+ethcli tenderly actions get <action-id> --project <slug> --account <slug>
+ethcli tenderly actions invoke <action-id> --project <slug> --account <slug>
+ethcli tenderly actions logs <action-id> --project <slug> --account <slug>
+
+# Networks
+ethcli tenderly networks list
+ethcli tenderly networks get <network-id>
+
+# Simulation (alias to ethcli simulate)
+ethcli tenderly simulate call <contract> --sig "balanceOf(address)" <args>
 ```
 
 ## Project Structure
@@ -129,6 +176,7 @@ src/
     ├── rpc.rs        # Direct RPC calls
     ├── sig.rs        # Signature lookup commands
     ├── simulate.rs   # Transaction simulation
+    ├── tenderly.rs   # Tenderly API commands
     └── token.rs      # Token commands
 ```
 
@@ -136,6 +184,7 @@ src/
 
 - **alloy 1.0**: Ethereum provider, types, ABI decoding
 - **foundry-block-explorers**: Etherscan API client
+- **tndrly**: Tenderly API client
 - **tokio**: Async runtime
 - **clap**: CLI parsing
 - **serde/serde_json**: Serialization
@@ -184,6 +233,7 @@ ethcli endpoints test https://eth.llamarpc.com
 ## Environment Variables
 
 - `ETHERSCAN_API_KEY`: Etherscan API key (optional, increases rate limit)
+- `TENDERLY_ACCESS_KEY`: Tenderly API access key (required for `ethcli tenderly` commands)
 
 ## Release Process
 
