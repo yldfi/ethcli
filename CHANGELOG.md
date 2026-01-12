@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0](https://github.com/michaeldim/ethcli/compare/v0.19.0...v0.20.0) (2026-01-12)
+
+
+### Features
+
+* add full Tenderly API support ([a2e5779](https://github.com/michaeldim/ethcli/commit/a2e5779ee93b0a69d8323d0cc84f3c9bab8d2861))
+* add state overrides for debug/trace backends and tndrly 0.2 params ([2e52910](https://github.com/michaeldim/ethcli/commit/2e529109954c042659e1c53db467f92b52a31fc3))
+
+
+### Bug Fixes
+
+* add abi alias to contract abi command ([268c2e2](https://github.com/michaeldim/ethcli/commit/268c2e2c8e8d471d0efe1af72c286d4ade50cfcb))
+
 ## [0.19.0](https://github.com/michaeldim/ethcli/compare/v0.18.0...v0.19.0) (2026-01-10)
 
 
