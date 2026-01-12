@@ -1227,10 +1227,24 @@ async fn handle_admin(
 
         AdminCommands::GetLatest => {
             if !quiet {
-                eprintln!("Getting latest transaction ID...");
+                eprintln!("Getting latest block info...");
             }
-            let id = admin.get_latest().await?;
-            println!("{}", id);
+            let block = admin.get_latest().await?;
+            // Build JSON manually since LatestBlock doesn't derive Serialize
+            let mut json = serde_json::Map::new();
+            if let Some(num) = &block.block_number {
+                json.insert("blockNumber".to_string(), serde_json::json!(num));
+            }
+            if let Some(hash) = &block.block_hash {
+                json.insert("blockHash".to_string(), serde_json::json!(hash));
+            }
+            if let Some(tx) = &block.transaction_hash {
+                json.insert("transactionHash".to_string(), serde_json::json!(tx));
+            }
+            for (k, v) in &block.extra {
+                json.insert(k.clone(), v.clone());
+            }
+            println!("{}", serde_json::to_string_pretty(&json)?);
         }
     }
 

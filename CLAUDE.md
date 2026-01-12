@@ -97,8 +97,8 @@ ethcli tenderly vnets admin --vnet <id> increase-blocks 10 --project <slug> --ac
 ethcli tenderly vnets admin --vnet <id> snapshot --project <slug> --account <slug>
 ethcli tenderly vnets admin --vnet <id> revert <snapshot-id> --project <slug> --account <slug>
 
-# VNet Admin RPC - Storage/Code
-ethcli tenderly vnets admin --vnet <id> set-storage --address <addr> --slot <hex> --value <hex> --project <slug> --account <slug>
+# VNet Admin RPC - Storage/Code (slot/value accept decimal or hex, auto-padded to 32 bytes)
+ethcli tenderly vnets admin --vnet <id> set-storage --address <addr> --slot 0 --value 1 --project <slug> --account <slug>
 ethcli tenderly vnets admin --vnet <id> set-code --address <addr> --code <bytecode> --project <slug> --account <slug>
 
 # VNet Admin RPC - Transactions
