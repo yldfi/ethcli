@@ -143,10 +143,43 @@ pub enum VnetsCommands {
         id: String,
     },
 
-    /// Delete a Virtual TestNet
+    /// Delete Virtual TestNet(s)
     Delete {
+        /// VNet ID(s) to delete (can specify multiple)
+        #[arg(required_unless_present = "all")]
+        ids: Vec<String>,
+
+        /// Delete all Virtual TestNets
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+    },
+
+    /// Update a Virtual TestNet
+    Update {
         /// VNet ID
         id: String,
+
+        /// New display name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// New slug
+        #[arg(long)]
+        slug: Option<String>,
+
+        /// Enable/disable state sync
+        #[arg(long)]
+        sync_state: Option<bool>,
+    },
+
+    /// Get a specific transaction from a Virtual TestNet
+    GetTransaction {
+        /// VNet ID
+        #[arg(long)]
+        vnet: String,
+
+        /// Transaction hash
+        hash: String,
     },
 
     /// Fork an existing Virtual TestNet
@@ -710,12 +743,71 @@ async fn handle_vnets(
             println!("{}", serde_json::to_string_pretty(&vnet)?);
         }
 
-        VnetsCommands::Delete { id } => {
-            if !quiet {
-                eprintln!("Deleting Virtual TestNet {}...", id);
+        VnetsCommands::Delete { ids, all } => {
+            if *all {
+                if !quiet {
+                    eprintln!("Fetching all Virtual TestNets...");
+                }
+                let vnets = client.vnets().list(None).await?;
+                if vnets.is_empty() {
+                    println!("No Virtual TestNets to delete.");
+                    return Ok(());
+                }
+                let vnet_ids: Vec<String> = vnets.into_iter().map(|v| v.id).collect();
+                let count = vnet_ids.len();
+                if !quiet {
+                    eprintln!("Deleting {} Virtual TestNets...", count);
+                }
+                client.vnets().delete_many(vnet_ids).await?;
+                println!("{} Virtual TestNets deleted.", count);
+            } else if ids.len() == 1 {
+                let id = &ids[0];
+                if !quiet {
+                    eprintln!("Deleting Virtual TestNet {}...", id);
+                }
+                client.vnets().delete(id).await?;
+                println!("Virtual TestNet {} deleted.", id);
+            } else {
+                if !quiet {
+                    eprintln!("Deleting {} Virtual TestNets...", ids.len());
+                }
+                client.vnets().delete_many(ids.clone()).await?;
+                println!("{} Virtual TestNets deleted.", ids.len());
             }
-            client.vnets().delete(id).await?;
-            println!("Virtual TestNet {} deleted.", id);
+        }
+
+        VnetsCommands::Update {
+            id,
+            name,
+            slug,
+            sync_state,
+        } => {
+            if !quiet {
+                eprintln!("Updating Virtual TestNet {}...", id);
+            }
+
+            let mut request = tndrly::vnets::UpdateVNetRequest::new();
+
+            if let Some(n) = name {
+                request = request.display_name(n);
+            }
+            if let Some(s) = slug {
+                request = request.slug(s);
+            }
+            if let Some(ss) = sync_state {
+                request = request.sync_state(*ss);
+            }
+
+            let vnet = client.vnets().update(id, &request).await?;
+            println!("{}", serde_json::to_string_pretty(&vnet)?);
+        }
+
+        VnetsCommands::GetTransaction { vnet, hash } => {
+            if !quiet {
+                eprintln!("Getting transaction {} from VNet {}...", hash, vnet);
+            }
+            let tx = client.vnets().get_transaction(vnet, hash).await?;
+            println!("{}", serde_json::to_string_pretty(&tx)?);
         }
 
         VnetsCommands::Fork {
