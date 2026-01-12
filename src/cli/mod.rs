@@ -14,6 +14,7 @@ pub mod logs;
 pub mod rpc;
 pub mod sig;
 pub mod simulate;
+pub mod tenderly;
 pub mod token;
 pub mod tx;
 
@@ -211,5 +212,11 @@ pub enum Commands {
     Simulate {
         #[command(subcommand)]
         action: Box<simulate::SimulateCommands>,
+    },
+
+    /// Tenderly API (vnets, wallets, contracts, alerts, actions, networks)
+    Tenderly {
+        #[command(subcommand)]
+        action: Box<tenderly::TenderlyCommands>,
     },
 }

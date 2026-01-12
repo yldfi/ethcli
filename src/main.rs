@@ -178,6 +178,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Simulate { action } => {
             return ethcli::cli::simulate::handle(action, chain, cli.quiet).await;
         }
+        Commands::Tenderly { action } => {
+            return ethcli::cli::tenderly::handle(action, chain, cli.quiet).await;
+        }
     }
 }
 
