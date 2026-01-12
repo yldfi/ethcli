@@ -3,47 +3,25 @@
 //! Full Tenderly API access: vnets, wallets, contracts, alerts, actions, networks
 
 use crate::cli::simulate::TenderlyArgs;
-use crate::config::ConfigFile;
+use anyhow::Context;
 use clap::Subcommand;
 
-/// Create a tndrly::Client from args/env/config credentials
-fn create_client(args: &TenderlyArgs) -> anyhow::Result<tndrly::Client> {
-    let config = ConfigFile::load_default().ok().flatten();
-    let tenderly_config = config.as_ref().and_then(|c| c.tenderly.as_ref());
-
-    let api_key = args
-        .tenderly_key
-        .clone()
-        .or_else(|| tenderly_config.map(|t| t.access_key.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Tenderly API key required. Set via --tenderly-key, TENDERLY_ACCESS_KEY env, or config file"
-            )
-        })?;
-
-    let account = args
-        .tenderly_account
-        .clone()
-        .or_else(|| tenderly_config.map(|t| t.account.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Tenderly account required. Set via --tenderly-account, TENDERLY_ACCOUNT env, or config file"
-            )
-        })?;
-
-    let project = args
-        .tenderly_project
-        .clone()
-        .or_else(|| tenderly_config.map(|t| t.project.clone()))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Tenderly project required. Set via --tenderly-project, TENDERLY_PROJECT env, or config file"
-            )
-        })?;
-
-    let config = tndrly::Config::new(api_key, account, project);
-    tndrly::Client::new(config)
-        .map_err(|e| anyhow::anyhow!("Failed to create Tenderly client: {}", e))
+/// Validate that a string is a valid Ethereum address (40 hex chars, with optional 0x prefix)
+fn validate_address(address: &str) -> anyhow::Result<()> {
+    let addr = address.strip_prefix("0x").unwrap_or(address);
+    if addr.len() != 40 {
+        anyhow::bail!(
+            "Invalid address '{}': expected 40 hex characters (with optional 0x prefix)",
+            address
+        );
+    }
+    if !addr.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!(
+            "Invalid address '{}': contains non-hexadecimal characters",
+            address
+        );
+    }
+    Ok(())
 }
 
 #[derive(Subcommand)]
@@ -672,7 +650,7 @@ async fn handle_vnets(
     tenderly: &TenderlyArgs,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let client = create_client(tenderly)?;
+    let client = tenderly.create_client()?;
 
     match cmd {
         VnetsCommands::Create {
@@ -819,7 +797,7 @@ async fn handle_wallets(
     tenderly: &TenderlyArgs,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let client = create_client(tenderly)?;
+    let client = tenderly.create_client()?;
 
     match cmd {
         WalletsCommands::Add {
@@ -827,6 +805,7 @@ async fn handle_wallets(
             name,
             networks,
         } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Adding wallet {}...", address);
             }
@@ -874,7 +853,7 @@ async fn handle_contracts(
     tenderly: &TenderlyArgs,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let client = create_client(tenderly)?;
+    let client = tenderly.create_client()?;
 
     match cmd {
         ContractsCommands::Add {
@@ -882,6 +861,7 @@ async fn handle_contracts(
             network,
             name,
         } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Adding contract {} on network {}...", address, network);
             }
@@ -905,6 +885,7 @@ async fn handle_contracts(
         }
 
         ContractsCommands::Get { address, network } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Getting contract {} on network {}...", address, network);
             }
@@ -913,6 +894,7 @@ async fn handle_contracts(
         }
 
         ContractsCommands::Delete { address, network } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Deleting contract {} on network {}...", address, network);
             }
@@ -928,10 +910,12 @@ async fn handle_contracts(
             compiler,
             optimize_runs,
         } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Verifying contract {} on network {}...", address, network);
             }
-            let source_code = std::fs::read_to_string(source)?;
+            let source_code = std::fs::read_to_string(source)
+                .with_context(|| format!("Failed to read source file: {}", source))?;
             let mut request = tndrly::contracts::VerifyContractRequest::new(
                 network,
                 address,
@@ -947,6 +931,7 @@ async fn handle_contracts(
         }
 
         ContractsCommands::Abi { address, network } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Getting ABI for {} on network {}...", address, network);
             }
@@ -959,6 +944,7 @@ async fn handle_contracts(
             network,
             tag,
         } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Adding tag '{}' to contract {}...", tag, address);
             }
@@ -971,6 +957,7 @@ async fn handle_contracts(
             network,
             name,
         } => {
+            validate_address(address)?;
             if !quiet {
                 eprintln!("Renaming contract {} to '{}'...", address, name);
             }
@@ -991,7 +978,7 @@ async fn handle_alerts(
     tenderly: &TenderlyArgs,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let client = create_client(tenderly)?;
+    let client = tenderly.create_client()?;
 
     match cmd {
         AlertsCommands::Create {
@@ -1005,10 +992,12 @@ async fn handle_alerts(
                 eprintln!("Creating alert '{}'...", name);
             }
 
-            let alert_type: tndrly::alerts::AlertType =
-                alert_type.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
-            let target: tndrly::alerts::AlertTarget =
-                target_type.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+            let alert_type: tndrly::alerts::AlertType = alert_type
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid alert type '{}': {}", alert_type, e))?;
+            let target: tndrly::alerts::AlertTarget = target_type
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid target type '{}': {}", target_type, e))?;
 
             let mut request =
                 tndrly::alerts::CreateAlertRequest::new(name, alert_type, network, target);
@@ -1157,7 +1146,7 @@ async fn handle_actions(
     tenderly: &TenderlyArgs,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let client = create_client(tenderly)?;
+    let client = tenderly.create_client()?;
 
     match cmd {
         ActionsCommands::Create {
@@ -1169,10 +1158,12 @@ async fn handle_actions(
                 eprintln!("Creating Web3 Action '{}'...", name);
             }
 
-            let trigger_type: tndrly::actions::ActionTrigger =
-                trigger.parse().map_err(|e| anyhow::anyhow!("{}", e))?;
+            let trigger_type: tndrly::actions::ActionTrigger = trigger
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid trigger type '{}': {}", trigger, e))?;
 
-            let source_code = std::fs::read_to_string(source)?;
+            let source_code = std::fs::read_to_string(source)
+                .with_context(|| format!("Failed to read action source file: {}", source))?;
             let request =
                 tndrly::actions::CreateActionRequest::new(name, trigger_type, &source_code);
             let action = client.actions().create(&request).await?;
@@ -1256,7 +1247,8 @@ async fn handle_actions(
             if !quiet {
                 eprintln!("Updating source for Action {}...", id);
             }
-            let source_code = std::fs::read_to_string(source)?;
+            let source_code = std::fs::read_to_string(source)
+                .with_context(|| format!("Failed to read action source file: {}", source))?;
             client.actions().update_source(id, &source_code).await?;
             println!("Action {} source updated.", id);
         }
@@ -1290,7 +1282,7 @@ async fn handle_networks(
     tenderly: &TenderlyArgs,
     quiet: bool,
 ) -> anyhow::Result<()> {
-    let client = create_client(tenderly)?;
+    let client = tenderly.create_client()?;
 
     match cmd {
         NetworksCommands::List => {

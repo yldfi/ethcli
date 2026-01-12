@@ -27,6 +27,54 @@ pub struct TenderlyArgs {
     pub tenderly_project: Option<String>,
 }
 
+impl TenderlyArgs {
+    /// Get resolved Tenderly credentials (api_key, account, project) from args/env/config
+    pub fn get_credentials(&self) -> anyhow::Result<(String, String, String)> {
+        let config = ConfigFile::load_default().ok().flatten();
+        let tenderly_config = config.as_ref().and_then(|c| c.tenderly.as_ref());
+
+        let api_key = self
+            .tenderly_key
+            .clone()
+            .or_else(|| tenderly_config.map(|t| t.access_key.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Tenderly API key required. Set via --tenderly-key, TENDERLY_ACCESS_KEY env, or config file"
+                )
+            })?;
+
+        let account = self
+            .tenderly_account
+            .clone()
+            .or_else(|| tenderly_config.map(|t| t.account.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Tenderly account required. Set via --tenderly-account, TENDERLY_ACCOUNT env, or config file"
+                )
+            })?;
+
+        let project = self
+            .tenderly_project
+            .clone()
+            .or_else(|| tenderly_config.map(|t| t.project.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Tenderly project required. Set via --tenderly-project, TENDERLY_PROJECT env, or config file"
+                )
+            })?;
+
+        Ok((api_key, account, project))
+    }
+
+    /// Create a tndrly::Client from args/env/config credentials
+    pub fn create_client(&self) -> anyhow::Result<tndrly::Client> {
+        let (api_key, account, project) = self.get_credentials()?;
+        let config = tndrly::Config::new(api_key, account, project);
+        tndrly::Client::new(config)
+            .map_err(|e| anyhow::anyhow!("Failed to create Tenderly client: {}", e))
+    }
+}
+
 /// Output format for dry-run mode
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub enum DryRunFormat {
@@ -421,50 +469,32 @@ fn get_trace_rpc_url(rpc_url: &Option<String>, chain: Chain) -> Option<String> {
         .map(|e| e.url.clone())
 }
 
-/// Get Tenderly credentials from args, env, or config file
+/// Get Tenderly credentials from args, env, or config file (wrapper for legacy callers)
 fn get_tenderly_credentials(
     key: &Option<String>,
     account: &Option<String>,
     project: &Option<String>,
 ) -> anyhow::Result<(String, String, String)> {
-    // Try args/env first, then fall back to config
-    let config = ConfigFile::load_default().ok().flatten();
-    let tenderly_config = config.as_ref().and_then(|c| c.tenderly.as_ref());
-
-    let api_key = key
-        .clone()
-        .or_else(|| tenderly_config.map(|t| t.access_key.clone()))
-        .ok_or_else(|| anyhow::anyhow!(
-            "Tenderly API key required. Set via --tenderly-key, TENDERLY_ACCESS_KEY env, or config file"
-        ))?;
-
-    let acct = account
-        .clone()
-        .or_else(|| tenderly_config.map(|t| t.account.clone()))
-        .ok_or_else(|| anyhow::anyhow!(
-            "Tenderly account required. Set via --tenderly-account, TENDERLY_ACCOUNT env, or config file"
-        ))?;
-
-    let proj = project
-        .clone()
-        .or_else(|| tenderly_config.map(|t| t.project.clone()))
-        .ok_or_else(|| anyhow::anyhow!(
-            "Tenderly project required. Set via --tenderly-project, TENDERLY_PROJECT env, or config file"
-        ))?;
-
-    Ok((api_key, acct, proj))
+    TenderlyArgs {
+        tenderly_key: key.clone(),
+        tenderly_account: account.clone(),
+        tenderly_project: project.clone(),
+    }
+    .get_credentials()
 }
 
-/// Create a tndrly::Client from args/env/config credentials
+/// Create a tndrly::Client from args/env/config credentials (wrapper for legacy callers)
 fn create_tenderly_client(
     key: &Option<String>,
     account: &Option<String>,
     project: &Option<String>,
 ) -> anyhow::Result<tndrly::Client> {
-    let (api_key, acct, proj) = get_tenderly_credentials(key, account, project)?;
-    let config = tndrly::Config::new(api_key, acct, proj);
-    tndrly::Client::new(config)
-        .map_err(|e| anyhow::anyhow!("Failed to create Tenderly client: {}", e))
+    TenderlyArgs {
+        tenderly_key: key.clone(),
+        tenderly_account: account.clone(),
+        tenderly_project: project.clone(),
+    }
+    .create_client()
 }
 
 /// Simulation backend
