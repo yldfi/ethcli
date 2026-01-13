@@ -15,7 +15,7 @@
 
 ## Features
 
-- **Log Fetching**: Parallel RPC requests across 22+ free archive nodes
+- **Log Fetching**: Parallel RPC requests across multiple endpoints
 - **Transaction Analysis**: Decode transactions with signature lookup
 - **Account Operations**: Balance, transactions, token transfers
 - **Contract Tools**: ABI fetching, source code, verification status
