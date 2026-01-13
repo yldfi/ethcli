@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/michaeldim/ethcli/compare/v0.21.1...v0.21.2) (2026-01-13)
+
+
+### Bug Fixes
+
+* **tenderly:** update tndrly to 0.3.2 and fix contracts add ([e4ae597](https://github.com/michaeldim/ethcli/commit/e4ae597a2c64e15bcf25eeb8a8326c46e6e0b48c))
+
 ## [0.21.1](https://github.com/michaeldim/ethcli/compare/v0.21.0...v0.21.1) (2026-01-12)
 
 
