@@ -7,6 +7,7 @@ use crate::config::{AddressBook, Chain};
 use crate::etherscan::TokenMetadataCache;
 use crate::rpc::get_rpc_endpoint;
 use crate::rpc::multicall::{selectors, MulticallBuilder};
+use crate::utils::format::format_token_amount;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
 use clap::Subcommand;
@@ -422,66 +423,4 @@ pub async fn handle(
     }
 
     Ok(())
-}
-
-/// Format a token amount with decimals (e.g., 1000000 with 6 decimals = "1.0")
-fn format_token_amount(raw: &str, decimals: u8) -> String {
-    let dec = decimals as usize;
-    let len = raw.len();
-
-    if len <= dec {
-        let padded = format!("{:0>width$}", raw, width = dec);
-        let trimmed = padded.trim_end_matches('0');
-        if trimmed.is_empty() {
-            "0".to_string()
-        } else {
-            format!("0.{}", trimmed)
-        }
-    } else {
-        let integer_part = &raw[..len - dec];
-        let decimal_part = &raw[len - dec..];
-        let decimal_trimmed = decimal_part.trim_end_matches('0');
-
-        let formatted_int = add_thousands_sep(integer_part);
-
-        if decimal_trimmed.is_empty() {
-            formatted_int
-        } else {
-            let dec_display = if decimal_trimmed.len() > 4 {
-                &decimal_trimmed[..4]
-            } else {
-                decimal_trimmed
-            };
-            format!("{}.{}", formatted_int, dec_display)
-        }
-    }
-}
-
-/// Add thousands separators to a number string
-fn add_thousands_sep(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    if len <= 3 {
-        return s.to_string();
-    }
-
-    let mut result = String::with_capacity(len + (len - 1) / 3);
-    let first_group = len % 3;
-
-    if first_group > 0 {
-        result.push_str(&s[..first_group]);
-        if len > first_group {
-            result.push(',');
-        }
-    }
-
-    for (i, chunk) in s.as_bytes()[first_group..].chunks(3).enumerate() {
-        if i > 0 {
-            result.push(',');
-        }
-        result.push_str(std::str::from_utf8(chunk).unwrap());
-    }
-
-    result
 }

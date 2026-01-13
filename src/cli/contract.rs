@@ -6,6 +6,7 @@ use super::OutputFormat;
 use crate::config::{Chain, ConfigFile, EndpointConfig};
 use crate::etherscan::{Client, SignatureCache};
 use crate::rpc::Endpoint;
+use crate::utils::format::with_thousands_sep;
 use alloy::dyn_abi::{DynSolType, DynSolValue, FunctionExt, JsonAbiExt};
 use alloy::primitives::{Address, B256};
 use alloy::providers::Provider;
@@ -613,7 +614,7 @@ fn format_value_internal(value: &DynSolValue, human: bool, decimals: Option<u8>)
         DynSolValue::Bool(b) => b.to_string(),
         DynSolValue::Int(i, _) => {
             if human {
-                format_number_with_commas(&i.to_string())
+                with_thousands_sep(&i.to_string())
             } else {
                 i.to_string()
             }
@@ -625,10 +626,10 @@ fn format_value_internal(value: &DynSolValue, human: bool, decimals: Option<u8>)
                     format_with_decimals(u, dec)
                 } else if *bits <= 64 {
                     // Small numbers - use commas
-                    format_number_with_commas(&u.to_string())
+                    with_thousands_sep(&u.to_string())
                 } else {
                     // Large numbers (likely token amounts) - show with commas
-                    format_number_with_commas(&u.to_string())
+                    with_thousands_sep(&u.to_string())
                 }
             } else {
                 u.to_string()
@@ -663,33 +664,13 @@ fn format_value_internal(value: &DynSolValue, human: bool, decimals: Option<u8>)
     }
 }
 
-/// Format a number string with commas as thousands separators
-fn format_number_with_commas(num: &str) -> String {
-    // Handle negative numbers
-    let (sign, num) = if let Some(stripped) = num.strip_prefix('-') {
-        ("-", stripped)
-    } else {
-        ("", num)
-    };
-
-    let mut result = String::new();
-    for (i, c) in num.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(c);
-    }
-
-    format!("{}{}", sign, result.chars().rev().collect::<String>())
-}
-
 /// Format a U256 with decimal places
 fn format_with_decimals(value: &alloy::primitives::U256, decimals: u8) -> String {
     let s = value.to_string();
     let dec = decimals as usize;
 
     if dec == 0 {
-        return format_number_with_commas(&s);
+        return with_thousands_sep(&s);
     }
 
     // Pad with leading zeros if needed
@@ -703,12 +684,8 @@ fn format_with_decimals(value: &alloy::primitives::U256, decimals: u8) -> String
     let fraction_trimmed = fraction.trim_end_matches('0');
 
     if fraction_trimmed.is_empty() {
-        format_number_with_commas(integer)
+        with_thousands_sep(integer)
     } else {
-        format!(
-            "{}.{}",
-            format_number_with_commas(integer),
-            fraction_trimmed
-        )
+        format!("{}.{}", with_thousands_sep(integer), fraction_trimmed)
     }
 }

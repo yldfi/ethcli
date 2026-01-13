@@ -7,6 +7,7 @@ use crate::config::{AddressBook, Chain};
 use crate::etherscan::Client;
 use crate::rpc::get_rpc_endpoint;
 use crate::rpc::multicall::{selectors, MulticallBuilder, MULTICALL3_ADDRESS};
+use crate::utils::format::format_wei_to_eth;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
 use clap::Subcommand;
@@ -867,29 +868,6 @@ pub async fn handle(
     }
 
     Ok(())
-}
-
-/// Format wei value to ETH string
-fn format_wei_to_eth(wei: &str) -> String {
-    let wei_len = wei.len();
-    if wei_len <= 18 {
-        let padded = format!("{:0>18}", wei);
-        let decimal = padded.trim_end_matches('0');
-        if decimal.is_empty() {
-            "0.0".to_string()
-        } else {
-            format!("0.{}", decimal)
-        }
-    } else {
-        let integer_part = &wei[..wei_len - 18];
-        let decimal_part = &wei[wei_len - 18..];
-        let decimal_trimmed = decimal_part[..4.min(decimal_part.len())].trim_end_matches('0');
-        if decimal_trimmed.is_empty() {
-            format!("{}.0", integer_part)
-        } else {
-            format!("{}.{}", integer_part, decimal_trimmed)
-        }
-    }
 }
 
 /// Truncate address for display

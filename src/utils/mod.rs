@@ -2,6 +2,8 @@
 //!
 //! Common helpers used across multiple modules.
 
+pub mod format;
+
 use std::borrow::Cow;
 
 /// Token metadata (ERC20/ERC721/ERC1155)

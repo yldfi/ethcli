@@ -73,35 +73,7 @@ fn load_config_with_warning() -> Option<ConfigFile> {
     }
 }
 
-/// Format a number with thousands separators
-fn format_thousands(n: u64) -> String {
-    let s = n.to_string();
-    let bytes = s.as_bytes();
-    let len = bytes.len();
-
-    if len <= 3 {
-        return s;
-    }
-
-    let mut result = String::with_capacity(len + (len - 1) / 3);
-    let first_group = len % 3;
-
-    if first_group > 0 {
-        result.push_str(&s[..first_group]);
-        if len > first_group {
-            result.push(',');
-        }
-    }
-
-    for (i, chunk) in s.as_bytes()[first_group..].chunks(3).enumerate() {
-        if i > 0 {
-            result.push(',');
-        }
-        result.push_str(std::str::from_utf8(chunk).unwrap());
-    }
-
-    result
-}
+use ethcli::utils::format::format_thousands;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -1440,8 +1412,9 @@ async fn handle_update(install: bool, quiet: bool) -> anyhow::Result<()> {
 
     let bytes = response.bytes().await?;
 
-    // Extract and install
-    let temp_dir = std::env::temp_dir().join("ethcli-update");
+    // Extract and install using unique temp directory to prevent race conditions
+    let random_suffix: u64 = rand::random();
+    let temp_dir = std::env::temp_dir().join(format!("ethcli-update-{:016x}", random_suffix));
     std::fs::create_dir_all(&temp_dir)?;
 
     let archive_path = temp_dir.join(&asset.name);
