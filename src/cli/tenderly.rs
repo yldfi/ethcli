@@ -1358,7 +1358,7 @@ async fn handle_contracts(
                 eprintln!("Adding contract {} on network {}...", address, network);
             }
 
-            let mut request = tndrly::contracts::AddContractRequest::new(address, network);
+            let mut request = tndrly::contracts::AddContractRequest::new(network, address);
 
             if let Some(n) = name {
                 request = request.display_name(n);

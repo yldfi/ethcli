@@ -80,6 +80,8 @@ ethcli tenderly vnets list --project <slug> --account <slug>
 ethcli tenderly vnets create --slug <slug> --name "My VNet" --network-id 1 --project <slug> --account <slug>
 ethcli tenderly vnets get <vnet-id> --project <slug> --account <slug>
 ethcli tenderly vnets delete <vnet-id> --project <slug> --account <slug>
+ethcli tenderly vnets delete <id1> <id2> <id3> --project <slug> --account <slug>
+ethcli tenderly vnets delete --all --project <slug> --account <slug>
 ethcli tenderly vnets rpc <vnet-id> --project <slug> --account <slug>
 
 # VNet Admin RPC - Balance Management
