@@ -23,6 +23,10 @@
 - **RPC Commands**: Direct blockchain calls (call, block, storage, etc.)
 - **ENS Resolution**: Resolve names to addresses and reverse lookup
 - **Gas Oracle**: Real-time gas prices from Etherscan
+- **Simulation**: Transaction simulation via cast, Tenderly, or debug RPC
+- **Tenderly Integration**: Virtual testnets, contracts, alerts, and actions
+- **Address Book**: Save and lookup addresses by label
+- **Self-Updating**: Check for updates and auto-install
 - **Multi-chain**: Ethereum, Polygon, Arbitrum, Optimism, Base, BSC, Avalanche
 
 ## Installation
@@ -49,6 +53,11 @@ sudo mv ethcli /usr/local/bin/
 
 ### Install with Cargo
 
+```bash
+cargo install ethcli
+```
+
+Or from source:
 ```bash
 cargo install --git https://github.com/yldfi/ethcli.git
 ```
@@ -234,6 +243,115 @@ ethcli sig function 0xa9059cbb
 
 # Lookup event by topic
 ethcli sig event 0xddf252ad...
+```
+
+### Address Book
+
+```bash
+# Save an address with a label
+ethcli address add vitalik 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+
+# Lookup by label
+ethcli address get vitalik
+
+# List all saved addresses
+ethcli address list
+
+# Remove an address
+ethcli address remove vitalik
+```
+
+### Simulate - Transaction Simulation
+
+```bash
+# Simulate a contract call
+ethcli simulate call 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+  --sig "balanceOf(address)" 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+
+# Simulate with trace output
+ethcli simulate call 0x... --sig "transfer(address,uint256)" 0x... 1000 --trace
+
+# Trace an existing transaction
+ethcli simulate tx 0x1234...
+
+# Use different backends
+ethcli simulate call ... --via cast      # Default
+ethcli simulate call ... --via tenderly  # Tenderly API
+ethcli simulate call ... --via debug     # debug_traceCall RPC
+```
+
+### Tenderly - Virtual TestNets & API
+
+Requires `TENDERLY_ACCESS_KEY` environment variable.
+
+```bash
+# List virtual testnets
+ethcli tenderly vnets list --project <slug> --account <slug>
+
+# Create a vnet
+ethcli tenderly vnets create --slug my-vnet --name "My VNet" --network-id 1 \
+  --project <slug> --account <slug>
+
+# Get vnet RPC URL
+ethcli tenderly vnets rpc <vnet-id> --project <slug> --account <slug>
+
+# Set wallet balance on vnet
+ethcli tenderly vnets admin --vnet <id> set-balance 0x... 10eth \
+  --project <slug> --account <slug>
+
+# List contracts
+ethcli tenderly contracts list --project <slug> --account <slug>
+
+# List alerts
+ethcli tenderly alerts list --project <slug> --account <slug>
+```
+
+### Endpoints - Manage RPC Endpoints
+
+```bash
+# List configured endpoints
+ethcli endpoints list
+
+# Add an endpoint
+ethcli endpoints add https://eth.llamarpc.com
+
+# Test an endpoint
+ethcli endpoints test https://eth.llamarpc.com
+
+# Remove an endpoint
+ethcli endpoints remove https://eth.llamarpc.com
+```
+
+### Config - Configuration Management
+
+```bash
+# Initialize config with template
+ethcli config init
+
+# Show config file path
+ethcli config path
+
+# Show current config
+ethcli config show
+
+# Set Etherscan API key
+ethcli config set-etherscan-key YOUR_KEY
+
+# Set Tenderly credentials
+ethcli config set-tenderly --key KEY --account ACCOUNT --project PROJECT
+```
+
+### Update & Doctor
+
+```bash
+# Check for updates
+ethcli update
+
+# Auto-install latest version
+ethcli update --install
+
+# Check configuration and endpoint health
+ethcli doctor
 ```
 
 ## Multi-Chain Support
