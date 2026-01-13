@@ -4,6 +4,13 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum ConfigCommands {
+    /// Initialize a new config file with template and example endpoints
+    Init {
+        /// Overwrite existing config file
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Show config file path
     Path,
 

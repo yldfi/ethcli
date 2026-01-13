@@ -4,9 +4,10 @@ version = "0.21.2"
 edition = "2021"
 description = "Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts"
 license = "MIT"
-repository = "https://github.com/michaeldim/ethcli"
+repository = "https://github.com/yldfi/ethcli"
 keywords = ["ethereum", "cli", "etherscan", "blockchain", "web3"]
 categories = ["command-line-utilities", "web-programming"]
+readme = "README.md"
 
 [[bin]]
 name = "ethcli"

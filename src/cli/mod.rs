@@ -219,4 +219,14 @@ pub enum Commands {
         #[command(subcommand)]
         action: Box<tenderly::TenderlyCommands>,
     },
+
+    /// Check for updates and optionally install latest version
+    Update {
+        /// Automatically download and install the update
+        #[arg(long)]
+        install: bool,
+    },
+
+    /// Check configuration and endpoint health
+    Doctor,
 }

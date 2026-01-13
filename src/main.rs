@@ -181,6 +181,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Tenderly { action } => {
             return ethcli::cli::tenderly::handle(action, chain, cli.quiet).await;
         }
+
+        Commands::Update { install } => {
+            return handle_update(*install, cli.quiet).await;
+        }
+
+        Commands::Doctor => {
+            return handle_doctor(cli.quiet).await;
+        }
     }
 }
 
@@ -1076,6 +1084,38 @@ async fn handle_endpoints(action: &EndpointCommands, cli: &Cli) -> anyhow::Resul
 
 async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
     match action {
+        ConfigCommands::Init { force } => {
+            let path = ConfigFile::default_path();
+            if path.exists() && !force {
+                anyhow::bail!(
+                    "Config file already exists at: {}\nUse --force to overwrite.",
+                    path.display()
+                );
+            }
+
+            let template = generate_config_template();
+
+            // Ensure parent directory exists
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            std::fs::write(&path, template)?;
+
+            // Set restrictive permissions on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            }
+
+            println!("Config file created at: {}", path.display());
+            println!("\nEdit the file to:");
+            println!("  - Add your Etherscan API key");
+            println!("  - Add your Tenderly credentials (optional)");
+            println!("  - Add/remove RPC endpoints");
+        }
+
         ConfigCommands::Path => {
             println!("{}", ConfigFile::default_path().display());
         }
@@ -1130,6 +1170,532 @@ async fn handle_config(action: &ConfigCommands) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn generate_config_template() -> String {
+    r#"# ethcli configuration file
+# Documentation: https://github.com/yldfi/ethcli
+
+# =============================================================================
+# General Settings
+# =============================================================================
+[settings]
+# Number of concurrent RPC requests (default: 5)
+concurrency = 5
+
+# Request timeout in seconds (default: 30)
+timeout_seconds = 30
+
+# Number of retry attempts on failure (default: 3)
+retry_attempts = 3
+
+# Save checkpoint every N blocks when fetching logs (default: 1000)
+checkpoint_interval = 1000
+
+# =============================================================================
+# API Keys (optional but recommended)
+# =============================================================================
+
+# Etherscan API key - increases rate limits for ABI fetching
+# Get one free at: https://etherscan.io/apis
+# etherscan_api_key = "YOUR_ETHERSCAN_API_KEY"
+
+# =============================================================================
+# Tenderly Configuration (optional)
+# =============================================================================
+# Required for: ethcli tenderly, ethcli simulate --via tenderly
+# Get credentials at: https://dashboard.tenderly.co/account/authorization
+
+# [tenderly]
+# access_key = "YOUR_TENDERLY_ACCESS_KEY"
+# account = "your-account-slug"
+# project = "your-project-slug"
+
+# =============================================================================
+# Debug RPC URLs (optional)
+# =============================================================================
+# URLs with debug_traceCall support for transaction tracing
+debug_rpc_urls = []
+
+# =============================================================================
+# RPC Endpoints
+# =============================================================================
+# Add your own endpoints or use the public ones below.
+# Higher priority (1-15) = preferred. Endpoints are auto-tested and optimized.
+#
+# Fields:
+#   url            - RPC endpoint URL (required)
+#   chain          - ethereum, polygon, arbitrum, optimism, base, bsc, avalanche
+#   priority       - Selection preference 1-15 (higher = preferred)
+#   max_block_range - Max blocks per eth_getLogs query
+#   max_logs       - Max logs returned per query
+#   has_debug      - Supports debug_traceCall
+#   has_trace      - Supports trace_call (Erigon/OpenEthereum)
+#   enabled        - Set to false to disable
+#   note           - Optional description
+
+# -----------------------------------------------------------------------------
+# Ethereum Mainnet
+# -----------------------------------------------------------------------------
+[[endpoints]]
+url = "https://eth-mainnet.public.blastapi.io"
+chain = "ethereum"
+priority = 10
+max_block_range = 18303
+max_logs = 200000
+note = "Excellent - highest log limit"
+
+[[endpoints]]
+url = "https://ethereum.publicnode.com"
+chain = "ethereum"
+priority = 8
+max_block_range = 44864
+max_logs = 20000
+
+[[endpoints]]
+url = "https://eth.drpc.org"
+chain = "ethereum"
+priority = 6
+max_block_range = 10000
+max_logs = 5000
+
+# -----------------------------------------------------------------------------
+# Polygon
+# -----------------------------------------------------------------------------
+[[endpoints]]
+url = "https://polygon-mainnet.public.blastapi.io"
+chain = "polygon"
+priority = 10
+max_block_range = 100000
+max_logs = 10000
+
+[[endpoints]]
+url = "https://polygon.publicnode.com"
+chain = "polygon"
+priority = 5
+max_block_range = 10000
+max_logs = 10000
+
+# -----------------------------------------------------------------------------
+# Arbitrum
+# -----------------------------------------------------------------------------
+[[endpoints]]
+url = "https://arbitrum-mainnet.public.blastapi.io"
+chain = "arbitrum"
+priority = 10
+max_block_range = 100000
+max_logs = 10000
+
+[[endpoints]]
+url = "https://arb1.arbitrum.io/rpc"
+chain = "arbitrum"
+priority = 5
+max_block_range = 1999024
+max_logs = 10000
+
+# -----------------------------------------------------------------------------
+# Base
+# -----------------------------------------------------------------------------
+[[endpoints]]
+url = "https://base-mainnet.public.blastapi.io"
+chain = "base"
+priority = 10
+max_block_range = 100000
+max_logs = 10000
+
+[[endpoints]]
+url = "https://mainnet.base.org"
+chain = "base"
+priority = 8
+max_block_range = 10000
+max_logs = 10000
+note = "Official Base RPC"
+
+# -----------------------------------------------------------------------------
+# Optimism
+# -----------------------------------------------------------------------------
+[[endpoints]]
+url = "https://optimism-mainnet.public.blastapi.io"
+chain = "optimism"
+priority = 10
+max_block_range = 100000
+max_logs = 10000
+
+[[endpoints]]
+url = "https://mainnet.optimism.io"
+chain = "optimism"
+priority = 8
+max_block_range = 10000
+max_logs = 10000
+note = "Official Optimism RPC"
+
+# =============================================================================
+# Disabled Endpoints
+# =============================================================================
+# URLs listed here will be skipped even if defined above
+[disabled_endpoints]
+urls = []
+
+# =============================================================================
+# Proxy Configuration (optional)
+# =============================================================================
+# [proxy]
+# default = "socks5://127.0.0.1:9050"
+# rotate = false
+# file = "/path/to/proxy-list.txt"
+"#
+    .to_string()
+}
+
+async fn handle_update(install: bool, quiet: bool) -> anyhow::Result<()> {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct GitHubRelease {
+        tag_name: String,
+        html_url: String,
+        assets: Vec<GitHubAsset>,
+    }
+
+    #[derive(Deserialize)]
+    struct GitHubAsset {
+        name: String,
+        browser_download_url: String,
+    }
+
+    const REPO: &str = "yldfi/ethcli";
+    const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    if !quiet {
+        eprintln!("Checking for updates...");
+    }
+
+    // Fetch latest release from GitHub
+    let client = reqwest::Client::new();
+    let url = format!("https://api.github.com/repos/{}/releases/latest", REPO);
+    let response = client
+        .get(&url)
+        .header("User-Agent", "ethcli")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!(
+                "Could not fetch release info. The repository may be private.\n\
+                 Check manually: https://github.com/{}/releases",
+                REPO
+            );
+        }
+        anyhow::bail!("Failed to check for updates: {}", response.status());
+    }
+
+    let release: GitHubRelease = response.json().await?;
+    let latest_version = release.tag_name.trim_start_matches('v');
+
+    println!("Current version: v{}", CURRENT_VERSION);
+    println!("Latest version:  {}", release.tag_name);
+
+    if latest_version == CURRENT_VERSION {
+        println!("\n✓ You're on the latest version!");
+        return Ok(());
+    }
+
+    // Determine which asset to download based on OS and arch
+    let asset_name = get_asset_name_for_platform();
+    let asset = release.assets.iter().find(|a| a.name == asset_name);
+
+    if !install {
+        println!("\nUpdate available!");
+        println!("Download from: {}", release.html_url);
+        if asset.is_some() {
+            println!("\nOr run: ethcli update --install");
+        }
+        return Ok(());
+    }
+
+    // Install the update
+    let asset = asset.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No binary available for your platform ({}). Download manually from: {}",
+            asset_name,
+            release.html_url
+        )
+    })?;
+
+    if !quiet {
+        eprintln!("Downloading {}...", asset.name);
+    }
+
+    // Download the asset
+    let response = client
+        .get(&asset.browser_download_url)
+        .header("User-Agent", "ethcli")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download update: {}", response.status());
+    }
+
+    let bytes = response.bytes().await?;
+
+    // Extract and install
+    let temp_dir = std::env::temp_dir().join("ethcli-update");
+    std::fs::create_dir_all(&temp_dir)?;
+
+    let archive_path = temp_dir.join(&asset.name);
+    std::fs::write(&archive_path, &bytes)?;
+
+    // Extract based on file type
+    let binary_path = if asset.name.ends_with(".tar.gz") {
+        // Extract tar.gz
+        let output = std::process::Command::new("tar")
+            .args([
+                "-xzf",
+                &archive_path.to_string_lossy(),
+                "-C",
+                &temp_dir.to_string_lossy(),
+            ])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to extract archive: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        temp_dir.join("ethcli")
+    } else if asset.name.ends_with(".zip") {
+        // Extract zip
+        let output = std::process::Command::new("unzip")
+            .args([
+                "-o",
+                &archive_path.to_string_lossy(),
+                "-d",
+                &temp_dir.to_string_lossy(),
+            ])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to extract archive: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        temp_dir.join("ethcli.exe")
+    } else {
+        anyhow::bail!("Unknown archive format: {}", asset.name);
+    };
+
+    // Find the install location
+    let install_path = std::env::current_exe()?;
+
+    if !quiet {
+        eprintln!("Installing to {}...", install_path.display());
+    }
+
+    // On Unix, we need to handle the case where we can't overwrite a running binary
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Make the new binary executable
+        std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))?;
+
+        // Try direct copy first, fall back to rename trick if needed
+        if std::fs::copy(&binary_path, &install_path).is_err() {
+            // Rename the old binary and copy new one
+            let backup_path = install_path.with_extension("old");
+            std::fs::rename(&install_path, &backup_path)?;
+            std::fs::copy(&binary_path, &install_path)?;
+            let _ = std::fs::remove_file(&backup_path);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, rename the running exe and copy new one
+        let backup_path = install_path.with_extension("old.exe");
+        std::fs::rename(&install_path, &backup_path)?;
+        std::fs::copy(&binary_path, &install_path)?;
+        // Note: old exe will be cleaned up on next run or reboot
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    println!("\n✓ Updated to {}!", release.tag_name);
+    println!("  Restart your terminal or run: ethcli --version");
+
+    Ok(())
+}
+
+fn get_asset_name_for_platform() -> String {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    match (os, arch) {
+        ("macos", "aarch64") => "ethcli-macos-aarch64.tar.gz".to_string(),
+        ("macos", "x86_64") => "ethcli-macos-x86_64.tar.gz".to_string(),
+        ("linux", "x86_64") => "ethcli-linux-x86_64.tar.gz".to_string(),
+        ("linux", "aarch64") => "ethcli-linux-aarch64.tar.gz".to_string(),
+        ("windows", "x86_64") => "ethcli-windows-x86_64.zip".to_string(),
+        _ => format!("ethcli-{}-{}.tar.gz", os, arch),
+    }
+}
+
+async fn handle_doctor(quiet: bool) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    let mut warnings = 0;
+    let mut errors = 0;
+
+    // Check config file
+    let config_path = ConfigFile::default_path();
+    if config_path.exists() {
+        match ConfigFile::load(&config_path) {
+            Ok(config) => {
+                println!("✓ Config file: {}", config_path.display());
+
+                // Check Etherscan API key
+                if config.etherscan_api_key.is_some() {
+                    println!("✓ Etherscan API key: configured");
+                } else {
+                    println!("⚠ Etherscan API key: not set (optional, increases rate limits)");
+                    warnings += 1;
+                }
+
+                // Check Tenderly
+                if let Some(tenderly) = &config.tenderly {
+                    println!("✓ Tenderly: configured (account: {})", tenderly.account);
+                } else {
+                    println!("- Tenderly: not configured (optional)");
+                }
+
+                // Check endpoints by chain
+                let mut chain_endpoints: std::collections::HashMap<String, Vec<&EndpointConfig>> =
+                    std::collections::HashMap::new();
+                for ep in &config.endpoints {
+                    if ep.enabled {
+                        chain_endpoints
+                            .entry(ep.chain.to_string())
+                            .or_default()
+                            .push(ep);
+                    }
+                }
+
+                if chain_endpoints.is_empty() {
+                    println!("✗ No RPC endpoints configured");
+                    errors += 1;
+                } else {
+                    println!("\nRPC Endpoints:");
+                    for (chain, endpoints) in &chain_endpoints {
+                        println!("  {}: {} endpoint(s)", chain, endpoints.len());
+                    }
+
+                    // Test a few endpoints if not quiet
+                    if !quiet {
+                        println!("\nTesting endpoints...");
+                        let client = reqwest::Client::builder()
+                            .timeout(Duration::from_secs(5))
+                            .build()?;
+
+                        // Test first endpoint of each chain
+                        for (chain, endpoints) in &chain_endpoints {
+                            if let Some(ep) = endpoints.first() {
+                                let result = test_endpoint(&client, &ep.url).await;
+                                match result {
+                                    Ok(latency) => {
+                                        println!(
+                                            "  ✓ {} ({}): {}ms",
+                                            chain,
+                                            truncate_url(&ep.url, 40),
+                                            latency
+                                        );
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "  ✗ {} ({}): {}",
+                                            chain,
+                                            truncate_url(&ep.url, 40),
+                                            e
+                                        );
+                                        warnings += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                println!(
+                    "✗ Config file: {} (parse error: {})",
+                    config_path.display(),
+                    e
+                );
+                errors += 1;
+            }
+        }
+    } else {
+        println!("⚠ Config file: not found at {}", config_path.display());
+        println!("  Run: ethcli config init");
+        warnings += 1;
+    }
+
+    // Summary
+    println!();
+    if errors > 0 {
+        println!("Found {} error(s) and {} warning(s)", errors, warnings);
+        std::process::exit(1);
+    } else if warnings > 0 {
+        println!("All checks passed ({} warning(s))", warnings);
+    } else {
+        println!("✓ All checks passed!");
+    }
+
+    Ok(())
+}
+
+async fn test_endpoint(client: &reqwest::Client, url: &str) -> anyhow::Result<u128> {
+    let start = std::time::Instant::now();
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "eth_blockNumber",
+        "params": [],
+        "id": 1
+    });
+
+    let response = client.post(url).json(&body).send().await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("HTTP {}", response.status());
+    }
+
+    let json: serde_json::Value = response.json().await?;
+    if json.get("error").is_some() {
+        anyhow::bail!("RPC error");
+    }
+
+    Ok(start.elapsed().as_millis())
+}
+
+fn truncate_url(url: &str, max_len: usize) -> String {
+    if url.len() <= max_len {
+        url.to_string()
+    } else {
+        // Try to show the domain
+        if let Some(start) = url.find("://") {
+            let domain_start = start + 3;
+            if let Some(end) = url[domain_start..].find('/') {
+                let domain = &url[domain_start..domain_start + end];
+                if domain.len() < max_len - 3 {
+                    return format!("{}...", domain);
+                }
+            }
+        }
+        format!("{}...", &url[..max_len - 3])
+    }
 }
 
 async fn handle_tx(args: &TxArgs, cli: &Cli) -> anyhow::Result<()> {

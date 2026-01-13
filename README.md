@@ -1,6 +1,17 @@
-# ethcli
+<p align="center">
+  <img src="logo-128.png" alt="yld_fi" width="128" height="128">
+</p>
 
-Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts.
+<h1 align="center">ethcli</h1>
+
+<p align="center">
+  Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts
+</p>
+
+<p align="center">
+  <a href="https://crates.io/crates/ethcli"><img src="https://img.shields.io/crates/v/ethcli.svg" alt="crates.io"></a>
+  <a href="https://github.com/yldfi/ethcli/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
 
 ## Features
 
@@ -20,26 +31,26 @@ Comprehensive Ethereum CLI for logs, transactions, accounts, and contracts.
 
 ```bash
 # macOS (Apple Silicon)
-curl -sL https://github.com/michaeldim/ethcli/releases/latest/download/ethcli-macos-aarch64.tar.gz | tar xz
+curl -sL https://github.com/yldfi/ethcli/releases/latest/download/ethcli-macos-aarch64.tar.gz | tar xz
 sudo mv ethcli /usr/local/bin/
 
 # macOS (Intel)
-curl -sL https://github.com/michaeldim/ethcli/releases/latest/download/ethcli-macos-x86_64.tar.gz | tar xz
+curl -sL https://github.com/yldfi/ethcli/releases/latest/download/ethcli-macos-x86_64.tar.gz | tar xz
 sudo mv ethcli /usr/local/bin/
 
 # Linux (x86_64)
-curl -sL https://github.com/michaeldim/ethcli/releases/latest/download/ethcli-linux-x86_64.tar.gz | tar xz
+curl -sL https://github.com/yldfi/ethcli/releases/latest/download/ethcli-linux-x86_64.tar.gz | tar xz
 sudo mv ethcli /usr/local/bin/
 
 # Linux (ARM64)
-curl -sL https://github.com/michaeldim/ethcli/releases/latest/download/ethcli-linux-aarch64.tar.gz | tar xz
+curl -sL https://github.com/yldfi/ethcli/releases/latest/download/ethcli-linux-aarch64.tar.gz | tar xz
 sudo mv ethcli /usr/local/bin/
 ```
 
 ### Install with Cargo
 
 ```bash
-cargo install --git https://github.com/michaeldim/ethcli.git
+cargo install --git https://github.com/yldfi/ethcli.git
 ```
 
 ## Quick Start
