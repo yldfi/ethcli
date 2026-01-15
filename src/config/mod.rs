@@ -1,4 +1,4 @@
-//! Configuration management for eth-log-fetcher
+//! Configuration management for ethcli
 
 mod addressbook;
 mod chain;
@@ -7,7 +7,10 @@ mod file;
 
 pub use addressbook::{AddressBook, AddressEntry};
 pub use chain::{Chain, ChainId};
-pub use endpoint::{EndpointConfig, NodeType};
+pub use endpoint::{
+    EndpointConfig, NodeType, DEFAULT_MAX_BLOCK_RANGE, DEFAULT_MAX_LOGS, DEFAULT_PRIORITY,
+    MIN_TX_FETCH_CONCURRENCY,
+};
 pub use file::{ConfigFile, TenderlyConfig};
 
 use crate::error::{ConfigError, Result};

@@ -3,6 +3,22 @@
 use super::Chain;
 use serde::{Deserialize, Serialize};
 
+// ============================================================================
+// Default constants for RPC endpoints
+// ============================================================================
+
+/// Default maximum block range for getLogs queries
+pub const DEFAULT_MAX_BLOCK_RANGE: u64 = 10_000;
+
+/// Default maximum number of logs in a response
+pub const DEFAULT_MAX_LOGS: usize = 10_000;
+
+/// Default endpoint priority
+pub const DEFAULT_PRIORITY: u8 = 5;
+
+/// Minimum concurrency for transaction/receipt fetching
+pub const MIN_TX_FETCH_CONCURRENCY: usize = 5;
+
 /// Node type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,15 +88,15 @@ pub struct EndpointConfig {
 }
 
 fn default_max_block_range() -> u64 {
-    10_000
+    DEFAULT_MAX_BLOCK_RANGE
 }
 
 fn default_max_logs() -> usize {
-    10_000
+    DEFAULT_MAX_LOGS
 }
 
 fn default_priority() -> u8 {
-    5
+    DEFAULT_PRIORITY
 }
 
 fn default_enabled() -> bool {

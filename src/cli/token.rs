@@ -7,6 +7,7 @@ use crate::config::{AddressBook, Chain};
 use crate::etherscan::TokenMetadataCache;
 use crate::rpc::get_rpc_endpoint;
 use crate::rpc::multicall::{selectors, MulticallBuilder};
+use crate::utils::address::resolve_from_book;
 use crate::utils::format::format_token_amount;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
@@ -21,28 +22,6 @@ fn get_token_cache() -> &'static TokenMetadataCache {
     TOKEN_CACHE.get_or_init(TokenMetadataCache::new)
 }
 
-/// Resolve an address from label or raw address
-fn resolve_address(input: &str) -> anyhow::Result<(Address, Option<String>)> {
-    if input.starts_with("0x") && input.len() == 42 {
-        let addr = Address::from_str(input)
-            .map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", input, e))?;
-        return Ok((addr, None));
-    }
-
-    let book = AddressBook::load_default();
-    if let Some(entry) = book.get(input) {
-        let addr = Address::from_str(&entry.address)
-            .map_err(|e| anyhow::anyhow!("Invalid stored address for '{}': {}", input, e))?;
-        return Ok((addr, Some(input.to_string())));
-    }
-
-    Err(anyhow::anyhow!(
-        "Unknown label '{}'. Use 'ethcli address add {} <address>' to save it.",
-        input,
-        input
-    ))
-}
-
 #[derive(Subcommand)]
 pub enum TokenCommands {
     /// Get token info (name, symbol, decimals, supply)
@@ -55,8 +34,7 @@ pub enum TokenCommands {
         output: OutputFormat,
     },
 
-    /// Get top token holders (requires API key for most tokens)
-    #[command(hide = true)]
+    /// Get top token holders (requires Etherscan Pro plan)
     Holders {
         /// Token contract address
         address: String,
@@ -102,7 +80,7 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match action {
         TokenCommands::Info { address, output } => {
-            let (token_addr, label) = resolve_address(address)?;
+            let (token_addr, label) = resolve_from_book(address)?;
             let addr_str = format!("{:#x}", token_addr);
             let display = label.as_ref().unwrap_or(&addr_str);
 
@@ -242,7 +220,9 @@ pub async fn handle(
 
         TokenCommands::Holders { .. } => {
             return Err(anyhow::anyhow!(
-                "Token holders endpoint requires Etherscan API key. Use the Etherscan website for now."
+                "Token holders endpoint requires an Etherscan Pro plan.\n\
+                 See: https://docs.etherscan.io/resources/pro-endpoints\n\
+                 Alternative: View holders on Etherscan website directly."
             ));
         }
 
@@ -258,7 +238,7 @@ pub async fn handle(
 
             // Add explicit holders
             for h in holder {
-                holders.push(resolve_address(h)?);
+                holders.push(resolve_from_book(h)?);
             }
 
             // Add tagged addresses
@@ -341,7 +321,7 @@ pub async fn handle(
                     }
                 } else {
                     // ERC20 token
-                    let (token_addr, token_label) = resolve_address(token)?;
+                    let (token_addr, token_label) = resolve_from_book(token)?;
                     let token_str = format!("{:#x}", token_addr);
                     let token_display = token_label.as_ref().unwrap_or(&token_str);
 

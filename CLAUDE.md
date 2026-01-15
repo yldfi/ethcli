@@ -48,6 +48,8 @@ ethcli rpc        # Direct RPC calls
 ethcli ens        # ENS name resolution
 ethcli endpoints  # Manage RPC endpoints
 ethcli config     # Manage configuration
+ethcli update     # Check for updates and self-update
+ethcli doctor     # Diagnose configuration and connectivity
 ```
 
 ## Simulation Commands
@@ -189,6 +191,10 @@ src/
 │   ├── mod.rs        # Etherscan client wrapper
 │   ├── client.rs     # Extended Etherscan API client
 │   └── cache.rs      # Signature caching
+├── utils/
+│   ├── mod.rs        # Shared utility functions
+│   ├── format.rs     # Number/token formatting
+│   └── address.rs    # Address resolution utilities
 └── cli/
     ├── mod.rs        # CLI command structure
     ├── logs.rs       # Log fetching arguments
@@ -198,6 +204,7 @@ src/
     ├── cast.rs       # Type conversions, hashing, encoding
     ├── config.rs     # Config management
     ├── contract.rs   # Contract commands
+    ├── doctor.rs     # Diagnostics and health checks
     ├── endpoints.rs  # Endpoint management
     ├── ens.rs        # ENS name resolution
     ├── gas.rs        # Gas oracle commands
@@ -205,7 +212,8 @@ src/
     ├── sig.rs        # Signature lookup commands
     ├── simulate.rs   # Transaction simulation
     ├── tenderly.rs   # Tenderly API commands
-    └── token.rs      # Token commands
+    ├── token.rs      # Token commands
+    └── update.rs     # Self-update from GitHub
 ```
 
 ## Key Dependencies

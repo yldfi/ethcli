@@ -233,7 +233,16 @@ impl OutputWriter for CsvWriter {
                         // Track new columns that appeared after header was written
                         for key in log.params.keys() {
                             if !self.columns.contains(key) {
-                                *self.dropped_columns.entry(key.clone()).or_insert(0) += 1;
+                                let count = self.dropped_columns.entry(key.clone()).or_insert(0);
+                                *count += 1;
+                                // Warn immediately on first occurrence of a new column
+                                if *count == 1 {
+                                    tracing::warn!(
+                                        "CSV: New column '{}' appeared after header was written - values will be dropped. \
+                                         Consider using JSON or SQLite output for dynamic schemas.",
+                                        key
+                                    );
+                                }
                             }
                         }
 

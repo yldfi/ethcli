@@ -7,6 +7,7 @@ pub mod address;
 pub mod cast;
 pub mod config;
 pub mod contract;
+pub mod doctor;
 pub mod endpoints;
 pub mod ens;
 pub mod gas;
@@ -17,6 +18,7 @@ pub mod simulate;
 pub mod tenderly;
 pub mod token;
 pub mod tx;
+pub mod update;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt;

@@ -1,4 +1,4 @@
-//! Error types for eth-log-fetcher
+//! Error types for ethcli
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -8,11 +8,12 @@ use thiserror::Error;
 static API_KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         // Query parameter patterns
-        Regex::new(r"(?i)(\?|&)(api_?key|apikey|key|token|secret|auth|password)=[^&\s]+").unwrap(),
+        Regex::new(r"(?i)(\?|&)(api_?key|apikey|key|token|secret|auth|password)=[^&\s]+")
+            .expect("valid query param regex"),
         // Path segment patterns (e.g., /v1/key123abc/)
-        Regex::new(r"/v\d+/[a-zA-Z0-9_-]{20,}(/|$)").unwrap(),
+        Regex::new(r"/v\d+/[a-zA-Z0-9_-]{20,}(/|$)").expect("valid path segment regex"),
         // Bearer tokens
-        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_.-]+").unwrap(),
+        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_.-]+").expect("valid bearer token regex"),
     ]
 });
 

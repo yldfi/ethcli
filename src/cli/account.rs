@@ -3,22 +3,17 @@
 //! Query balances, transactions, and token transfers for addresses
 
 use super::OutputFormat;
-use crate::config::{AddressBook, Chain};
+use crate::config::Chain;
 use crate::etherscan::Client;
 use crate::rpc::get_rpc_endpoint;
 use crate::rpc::multicall::{selectors, MulticallBuilder, MULTICALL3_ADDRESS};
+use crate::utils::address::{is_ens_name, resolve_from_book};
 use crate::utils::format::format_wei_to_eth;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
 use clap::Subcommand;
 use std::io::Write;
 use std::str::FromStr;
-
-/// Check if a string looks like an ENS name
-fn is_ens_name(s: &str) -> bool {
-    // Contains a dot and doesn't start with 0x
-    s.contains('.') && !s.starts_with("0x")
-}
 
 /// Resolve an address from label, ENS name, or raw address
 /// Checks address book first, then tries ENS resolution
@@ -27,47 +22,32 @@ async fn resolve_address(
     chain: Chain,
     quiet: bool,
 ) -> anyhow::Result<(Address, Option<String>)> {
-    // If it looks like a raw address, parse directly
-    if input.starts_with("0x") && input.len() == 42 {
-        let addr =
-            Address::from_str(input).map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
-        return Ok((addr, None));
-    }
-
-    // Check address book first
-    let book = AddressBook::load_default();
-    if let Some(entry) = book.get(input) {
-        let addr = Address::from_str(&entry.address)
-            .map_err(|e| anyhow::anyhow!("Invalid stored address for '{}': {}", input, e))?;
-        return Ok((addr, Some(input.to_string())));
+    // Try sync resolution first (hex address or address book)
+    match resolve_from_book(input) {
+        Ok(result) => return Ok(result),
+        Err(_) if is_ens_name(input) => {
+            // Fall through to ENS resolution
+        }
+        Err(e) => return Err(e),
     }
 
     // Try ENS resolution if it looks like an ENS name
-    if is_ens_name(input) {
-        // Only works on Ethereum mainnet
-        if chain != Chain::Ethereum {
-            return Err(anyhow::anyhow!("ENS is only available on Ethereum mainnet"));
-        }
-
-        if !quiet {
-            eprintln!("Resolving ENS name {}...", input);
-            let _ = std::io::stderr().flush();
-        }
-
-        // Get RPC endpoint for ENS resolution (smart selection)
-        let endpoint = get_rpc_endpoint(chain)?;
-        let provider = endpoint.provider();
-
-        let address = crate::cli::ens::resolve_name(&provider, input).await?;
-        return Ok((address, Some(input.to_string())));
+    // Only works on Ethereum mainnet
+    if chain != Chain::Ethereum {
+        return Err(anyhow::anyhow!("ENS is only available on Ethereum mainnet"));
     }
 
-    // Unknown label - suggest adding to address book
-    Err(anyhow::anyhow!(
-        "Unknown label '{}'. Use 'ethcli address add {} <address>' to save it.",
-        input,
-        input
-    ))
+    if !quiet {
+        eprintln!("Resolving ENS name {}...", input);
+        let _ = std::io::stderr().flush();
+    }
+
+    // Get RPC endpoint for ENS resolution (smart selection)
+    let endpoint = get_rpc_endpoint(chain)?;
+    let provider = endpoint.provider();
+
+    let address = crate::cli::ens::resolve_name(&provider, input).await?;
+    Ok((address, Some(input.to_string())))
 }
 
 #[derive(Subcommand)]

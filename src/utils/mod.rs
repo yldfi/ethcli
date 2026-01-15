@@ -2,6 +2,7 @@
 //!
 //! Common helpers used across multiple modules.
 
+pub mod address;
 pub mod format;
 
 use std::borrow::Cow;

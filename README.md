@@ -368,7 +368,7 @@ ethcli --chain base gas oracle
 
 ## Configuration
 
-Config file: `~/.config/eth-log-fetcher/config.toml`
+Config file: `~/.config/ethcli/config.toml`
 
 ```toml
 # Set Etherscan API key (optional, increases rate limit)

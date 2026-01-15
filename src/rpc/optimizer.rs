@@ -6,7 +6,7 @@
 //! - Block range limits
 //! - Max logs limits
 
-use crate::config::{Chain, EndpointConfig, NodeType};
+use crate::config::{Chain, EndpointConfig, NodeType, DEFAULT_MAX_BLOCK_RANGE, DEFAULT_MAX_LOGS};
 use crate::error::Result;
 use alloy::primitives::{address, Address};
 use alloy::providers::{Provider, ProviderBuilder};
@@ -61,64 +61,15 @@ const FIRST_CONTRACT_BLOCK: u64 = 46147;
 /// Address with balance at block 46147 for archive testing
 const ARCHIVE_TEST_ADDRESS: Address = address!("5e97870f263700f46aa00d967821199b9bc5a120");
 
-/// Get current timestamp as ISO 8601 string
+/// Get current timestamp as Unix epoch seconds string.
+/// Using Unix timestamp for simplicity and reliability - avoids complex
+/// manual date calculations that could have edge case bugs.
 fn current_timestamp() -> String {
-    let now = SystemTime::now()
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    // Simple ISO-8601 format without external crate
-    let secs_per_day = 86400;
-    let secs_per_hour = 3600;
-    let secs_per_min = 60;
-
-    // Epoch is 1970-01-01
-    let days = now / secs_per_day;
-    let remaining = now % secs_per_day;
-    let hours = remaining / secs_per_hour;
-    let remaining = remaining % secs_per_hour;
-    let minutes = remaining / secs_per_min;
-    let seconds = remaining % secs_per_min;
-
-    // Simple date calculation (good enough for years 1970-2099)
-    let mut year = 1970u32;
-    let mut day_count = days as u32;
-
-    loop {
-        let days_in_year =
-            if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) {
-                366
-            } else {
-                365
-            };
-        if day_count < days_in_year {
-            break;
-        }
-        day_count -= days_in_year;
-        year += 1;
-    }
-
-    let is_leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let days_in_months = if is_leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1u32;
-    for &days_in_month in &days_in_months {
-        if day_count < days_in_month {
-            break;
-        }
-        day_count -= days_in_month;
-        month += 1;
-    }
-    let day = day_count + 1;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
-    )
+        .as_secs()
+        .to_string()
 }
 
 /// Optimize an endpoint by detecting its capabilities
@@ -430,7 +381,7 @@ async fn detect_block_range_limit(
     // Binary search for the maximum working block range
     let mut low: u64 = 100;
     let mut high: u64 = 2_000_000;
-    let mut best: u64 = 10_000; // Default fallback
+    let mut best: u64 = DEFAULT_MAX_BLOCK_RANGE; // Default fallback
 
     // Use an address that won't return many logs to test range limits
     let empty_address = address!("0000000000000000000000000000000000000001");
@@ -495,9 +446,9 @@ async fn detect_max_logs_limit(
 
     let mut test_range: u64 = 100;
     let mut last_log_count: usize = 0;
-    let mut max_logs: usize = 10_000; // Default
+    let mut max_logs: usize = DEFAULT_MAX_LOGS; // Default
 
-    while test_range <= 10_000 {
+    while test_range <= DEFAULT_MAX_BLOCK_RANGE {
         let from_block = current_block.saturating_sub(test_range);
 
         let filter = Filter::new()
@@ -518,8 +469,8 @@ async fn detect_max_logs_limit(
 
                 last_log_count = count;
 
-                // If we get 10000+ logs, that's likely the default limit
-                if count >= 10_000 {
+                // If we get DEFAULT_MAX_LOGS+ logs, that's likely the default limit
+                if count >= DEFAULT_MAX_LOGS {
                     max_logs = count;
                     break;
                 }
@@ -530,11 +481,11 @@ async fn detect_max_logs_limit(
                 let error_str = e.to_string().to_lowercase();
                 if error_str.contains("10000") || error_str.contains("too many") {
                     // Hit the limit
-                    max_logs = 10_000;
+                    max_logs = DEFAULT_MAX_LOGS;
                     break;
                 } else if error_str.contains("response size") {
                     // Response too large
-                    max_logs = last_log_count.max(10_000);
+                    max_logs = last_log_count.max(DEFAULT_MAX_LOGS);
                     break;
                 }
                 break;
@@ -588,9 +539,9 @@ mod tests {
     #[test]
     fn test_timestamp_format() {
         let ts = current_timestamp();
-        // Should be in format YYYY-MM-DDTHH:MM:SSZ
-        assert!(ts.contains('T'));
-        assert!(ts.ends_with('Z'));
-        assert_eq!(ts.len(), 20);
+        // Should be Unix epoch seconds (numeric string)
+        let epoch: u64 = ts.parse().expect("timestamp should be numeric");
+        // Should be a reasonable timestamp (after 2020-01-01)
+        assert!(epoch > 1577836800);
     }
 }

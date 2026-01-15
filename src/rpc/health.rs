@@ -212,6 +212,29 @@ impl HealthTracker {
         health.get(url).map(|h| h.is_available()).unwrap_or(true)
     }
 
+    /// Atomically check if endpoint is available for a probe request.
+    /// If the circuit breaker timeout has expired, this extends it to prevent
+    /// multiple concurrent probe requests (fixes race condition).
+    pub fn try_probe(&self, url: &str) -> bool {
+        let mut health = self.health.write();
+        let entry = health.entry(url.to_string()).or_default();
+
+        if !entry.circuit_open {
+            return true;
+        }
+
+        // Check if circuit breaker timeout has passed
+        if let Some(until) = entry.circuit_open_until {
+            if Instant::now() >= until {
+                // Extend timeout to prevent concurrent probes
+                entry.circuit_open_until = Some(Instant::now() + self.circuit_breaker_timeout);
+                return true; // Allow this one probe request
+            }
+        }
+
+        false
+    }
+
     /// Get health for an endpoint
     pub fn get_health(&self, url: &str) -> Option<EndpointHealth> {
         self.health.read().get(url).cloned()

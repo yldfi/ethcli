@@ -1,6 +1,9 @@
 //! RPC pool for managing multiple endpoints with parallel requests
 
-use crate::config::{Chain, ConfigFile, EndpointConfig, NodeType, RpcConfig};
+use crate::config::{
+    Chain, ConfigFile, EndpointConfig, NodeType, RpcConfig, DEFAULT_MAX_BLOCK_RANGE,
+    MIN_TX_FETCH_CONCURRENCY,
+};
 use crate::error::{sanitize_error_message, Error, Result, RpcError};
 use crate::rpc::{Endpoint, EndpointHealth, HealthTracker};
 use alloy::primitives::B256;
@@ -11,13 +14,23 @@ use rand::thread_rng;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
-/// Persist a learned block range limit to the config file
-/// This is fire-and-forget - errors are logged but don't affect operation
+/// Global mutex to serialize config file updates and prevent TOCTOU race conditions
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Persist a learned block range limit to the config file.
+///
+/// This is fire-and-forget - errors are logged but don't affect operation.
+/// Note: If the process exits quickly (e.g., Ctrl+C), these background writes
+/// may not complete. This is acceptable for a CLI tool since learned limits
+/// are optimizations, not critical data.
 fn persist_block_range_limit(url: &str, limit: u64) {
     let url = url.to_string();
     // Spawn a blocking task to avoid blocking the async runtime
     tokio::spawn(async move {
+        // Acquire lock to prevent concurrent config modifications
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
         if let Ok(Some(mut config)) = ConfigFile::load_default() {
             match config.update_endpoint_block_range(&url, limit) {
                 Ok(true) => {
@@ -40,6 +53,8 @@ fn persist_block_range_limit(url: &str, limit: u64) {
 fn persist_max_logs_limit(url: &str, limit: usize) {
     let url = url.to_string();
     tokio::spawn(async move {
+        // Acquire lock to prevent concurrent config modifications
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
         if let Ok(Some(mut config)) = ConfigFile::load_default() {
             match config.update_endpoint_max_logs(&url, limit) {
                 Ok(true) => {
@@ -186,7 +201,7 @@ impl RpcPool {
     /// Get a transaction by hash (tries multiple endpoints)
     pub async fn get_transaction(&self, hash: B256) -> Result<Option<Transaction>> {
         // Try more endpoints for historical data - archive coverage varies
-        let endpoints = self.select_endpoints(self.concurrency.max(5));
+        let endpoints = self.select_endpoints(self.concurrency.max(MIN_TX_FETCH_CONCURRENCY));
 
         for endpoint in endpoints {
             match endpoint.get_transaction(hash).await {
@@ -220,7 +235,7 @@ impl RpcPool {
     /// Get a transaction receipt by hash (tries multiple endpoints)
     pub async fn get_transaction_receipt(&self, hash: B256) -> Result<Option<TransactionReceipt>> {
         // Try more endpoints for historical data - archive coverage varies
-        let endpoints = self.select_endpoints(self.concurrency.max(5));
+        let endpoints = self.select_endpoints(self.concurrency.max(MIN_TX_FETCH_CONCURRENCY));
 
         for endpoint in endpoints {
             match endpoint.get_transaction_receipt(hash).await {
@@ -434,7 +449,7 @@ impl RpcPool {
             self.health
                 .effective_max_block_range(url, endpoint.max_block_range())
         } else {
-            10_000 // Default
+            DEFAULT_MAX_BLOCK_RANGE
         }
     }
 
@@ -447,7 +462,7 @@ impl RpcPool {
                     .effective_max_block_range(e.url(), e.max_block_range())
             })
             .min()
-            .unwrap_or(10_000)
+            .unwrap_or(DEFAULT_MAX_BLOCK_RANGE)
     }
 
     /// Get the largest max block range across healthy endpoints
@@ -466,7 +481,7 @@ impl RpcPool {
                     .effective_max_block_range(e.url(), e.max_block_range())
             })
             .max()
-            .unwrap_or(10_000)
+            .unwrap_or(DEFAULT_MAX_BLOCK_RANGE)
     }
 
     /// Get health info for all endpoints
